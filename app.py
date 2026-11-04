@@ -153,10 +153,65 @@ def lxc_create(name, os_type='ubuntu-22.04', ram='2GB', cpu='1 vCPU', disk='20GB
                 if meta.get('status') == 'Failure':
                     raise Exception(f"LXD create operation failed: {meta}")
             time.sleep(1)
+    lxc_start(name)
+    lxc_wait_running(name, timeout=150)
     _lxc_fix_networking(name)
     return name
 def lxc_start(name):
     _lxd_request('PUT', f"/1.0/instances/{name}/state?wait=600", data={'action': 'start'})
+def lxc_is_running(name):
+    code, resp = _lxd_request('GET', f"/1.0/instances/{name}/state")
+    if code == 200 and isinstance(resp, dict):
+        meta = resp.get('metadata') or {}
+        return str(meta.get('status', '')).lower() == 'running'
+    return False
+
+def lxc_wait_running(name, timeout=150):
+    """Start the instance if needed and wait until the guest is actually up."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if lxc_is_running(name):
+            return True
+        try:
+            lxc_start(name)
+        except Exception:
+            pass
+        time.sleep(2)
+    return lxc_is_running(name)
+
+def lxc_set_root_password(name, password, timeout=180):
+    """Set root's password once the guest can run commands.
+
+    A freshly created Incus instance is stopped and has no init running, so an
+    immediate ``chpasswd`` fails even though the container itself was created.
+    This starts the guest and retries inside it until its tools are usable.
+    """
+    lxc_wait_running(name)
+    entry = shlex.quote('root:' + password)
+    script = ("i=0; while [ $i -lt 45 ]; do "
+              "if command -v chpasswd >/dev/null 2>&1; then "
+              "printf '%s\\n' " + entry + " | chpasswd && echo OMEGA_PASSWORD_OK && exit 0; fi; "
+              "i=$((i+1)); sleep 2; done; exit 1")
+    code, output = lxc_attach(name, script, timeout=timeout)
+    if code == 0:
+        return True, output
+    fallback = ("printf '%s\\n%s\\n' " + shlex.quote(password) + " " + shlex.quote(password) + " | passwd root")
+    fallback_code, fallback_output = lxc_attach(name, fallback, timeout=60)
+    return fallback_code == 0, fallback_output or output
+
+def lxc_enable_ssh(name, timeout=240):
+    """Best effort: make sure sshd exists and accepts root logins."""
+    script = ("if ! command -v sshd >/dev/null 2>&1; then "
+              "(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server) >/dev/null 2>&1 || "
+              "apk add --no-cache openssh >/dev/null 2>&1 || true; fi; "
+              "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || true; "
+              "systemctl enable --now ssh >/dev/null 2>&1 || systemctl restart ssh >/dev/null 2>&1 || "
+              "service ssh restart >/dev/null 2>&1 || /usr/sbin/sshd 2>/dev/null || true")
+    try:
+        code, _output = lxc_attach(name, script, timeout=timeout)
+        return code == 0
+    except Exception:
+        return False
     time.sleep(2)
     _lxc_fix_networking(name)
 def lxc_stop(name, timeout=60):
@@ -13561,10 +13616,11 @@ def _create_vps_for_user(user, data):
             ssh_port = instance_info.get("ssh_port") or ""
             ssh_link = f"ssh root@{ssh_host}" + (f" -p {ssh_port}" if ssh_port else "")
         elif node["is_local"]:
-            code, output = lxc_attach(
-                container_id, "printf '%s\\n' " + shlex.quote("root:" + password) + " | chpasswd", timeout=20
-            )
-            if code != 0:
+            password_ok, password_output = lxc_set_root_password(container_id, password)
+            if password_ok:
+                lxc_enable_ssh(container_id)
+            else:
+                app.logger.warning("Root password provisioning failed on %s: %r", container_id, password_output)
                 if vps_type == "kvm":
                     app.logger.warning("KVM guest %s has no agent; set the root password from the console", container_id)
                     add_log("warning", f"{name}: KVM guest created; set the root password from the console", "vps")
@@ -13665,8 +13721,10 @@ def _provision_existing_panel_vps(user, vps_id, container_id, container_name, no
     password = secrets.token_urlsafe(16)
     ssh_link = ""
     if node["is_local"]:
-        code, _ = lxc_attach(container_id, "printf '%s\\n' " + shlex.quote("root:" + password) + " | chpasswd", timeout=20)
-        if code != 0:
+        password_ok, _output = lxc_set_root_password(container_id, password)
+        if password_ok:
+            lxc_enable_ssh(container_id)
+        else:
             raise RuntimeError("VPS created, but root password provisioning failed")
     else:
         result, status = call_node_api(
