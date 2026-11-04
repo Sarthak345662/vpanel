@@ -10,6 +10,13 @@
 # Credit: sartahk34 · SKa
 set -Eeuo pipefail
 
+# `curl -fsSL ... | sudo bash` hands this script a pipe as stdin, so every
+# `read` would hit EOF and the menu would flash and exit. Re-attach the
+# controlling terminal when there is one so prompts actually wait for input.
+if [[ ! -t 0 ]] && [[ -r /dev/tty ]] && { true < /dev/tty; } 2>/dev/null; then
+    exec < /dev/tty
+fi
+
 REPO_SLUG="${OMEGA_REPO_SLUG:-Sarthak345662/vpanel}"
 REPO_REF="${OMEGA_REPO_REF:-main}"
 ARCHIVE_URL="${OMEGA_REPO_ARCHIVE:-https://codeload.github.com/${REPO_SLUG}/tar.gz/refs/heads/${REPO_REF}}"
@@ -632,7 +639,15 @@ main_menu() {
         echo "    9) Uninstall panel"
         echo "    0) Exit"
         echo
-        read -rp "  Choose [0-9]: " choice || exit 0
+        if ! read -rp "  Choose [0-9]: " choice; then
+            echo
+            warn "No interactive terminal (stdin is not a TTY)."
+            echo "  Use a flag instead of the menu:"
+            echo "    sudo bash omega.sh --install"
+            echo "    sudo bash omega.sh --node-install --type=lxc|kvm|incus"
+            echo "    sudo bash omega.sh --help"
+            exit 0
+        fi
         case "${choice:-}" in
             1) install_panel ;;
             2) update_panel ;;
