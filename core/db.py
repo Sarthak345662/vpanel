@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -9,13 +10,17 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from .config import DB_PATH, DATA_DIR, DEFAULT_ENGINE, DEFAULT_VCPUS, DEFAULT_MEMORY_MB, DEFAULT_DISK_GB, MAX_VPS_PER_USER, HOSTNAME
 
 _lock = threading.RLock()
+# The job runner used the panel database but declared a different schema for
+# users/nodes/vps/settings. Sharing the file made the panel read its tables and
+# fail with "no such column". Jobs now live in their own SQLite file.
+JOB_DB_PATH = Path(os.getenv("OMEGA_JOBS_DB", str(DATA_DIR / "omega-jobs.db")))
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+    con = sqlite3.connect(JOB_DB_PATH, timeout=30, check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=NORMAL")

@@ -9358,17 +9358,23 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 def make_session_permanent():
     session.permanent = True
 limiter = Limiter(app=app, key_func=get_remote_address, default_limits=[], storage_uri='memory://')
+_PANEL_SCHEMA = (
+    ("users", ("id", "username", "email", "password")),
+    ("nodes", ("id", "is_local")),
+    ("settings", ("id", "site_name")),
+)
 def _database_has_schema(path):
-    """True when the file already looks like a panel database."""
+    """True when the file has the columns the panel itself depends on."""
     try:
         conn = sqlite3.connect(str(path), timeout=5)
         try:
-            row = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
-            ).fetchone()
+            for table, needed in _PANEL_SCHEMA:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+                if not set(needed).issubset(columns):
+                    return False
         finally:
             conn.close()
-        return bool(row)
+        return True
     except sqlite3.Error:
         return False
 def _resolve_database():
@@ -9389,12 +9395,24 @@ def _resolve_database():
     target = Path(env_db)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        if not _database_has_schema(target) and _database_has_schema(legacy):
+        if not _database_has_schema(target):
             import shutil
-            if target.exists() and target.stat().st_size:
-                shutil.copy2(str(target), str(target) + '.before-upgrade')
-            shutil.copy2(str(legacy), str(target))
-            app.logger.warning('Migrated legacy database.db to %s', target)
+            if _database_has_schema(legacy):
+                # The panel data lives in the old in-tree file: keep a copy of
+                # whatever is at the configured path, then restore the panel DB.
+                if target.exists() and target.stat().st_size:
+                    shutil.copy2(str(target), str(target) + '.before-upgrade')
+                for suffix in ('-wal', '-shm'):
+                    Path(str(target) + suffix).unlink(missing_ok=True)
+                shutil.copy2(str(legacy), str(target))
+                app.logger.warning('Restored panel database from legacy database.db to %s', target)
+            elif target.exists() and target.stat().st_size:
+                # Nothing usable to restore (for example a schema written by
+                # another component): move it aside so a clean one can be built.
+                for suffix in ('-wal', '-shm'):
+                    Path(str(target) + suffix).unlink(missing_ok=True)
+                target.rename(str(target) + '.unusable')
+                app.logger.warning('Moved unusable database %s aside and started fresh', target)
     except OSError:
         pass
     return str(target)
