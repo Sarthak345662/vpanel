@@ -16540,6 +16540,16 @@ except Exception:
     app.logger.exception("Hosting extension pack failed to register")
 
 
+# gunicorn imports this module and never runs the __main__ block below, so an
+# upgraded install must also get its tables and columns when only the web
+# service is restarted. Both calls are idempotent and never block startup.
+try:
+    init_db()
+    migrate_nodes()
+except Exception:
+    app.logger.exception("Database bootstrap failed during import")
+
+
 if __name__ == "__main__":
     init_db()
     try:
