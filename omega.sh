@@ -2,7 +2,7 @@
 # VIZION PANEL - one command menu
 #
 # No clone needed:
-#   bash <(curl -sL https://raw.githubusercontent.com/minecraft015662-svg/ska-sir-ne-kam-diya-ha/main/omega.sh)
+#   curl -fsSL https://raw.githubusercontent.com/Sarthak345662/vpanel/main/omega.sh | sudo bash
 #
 # Or from a checkout:
 #   sudo bash omega.sh
@@ -10,9 +10,10 @@
 # Credit: sartahk34 · SKa
 set -Eeuo pipefail
 
-REPO_SLUG="${OMEGA_REPO_SLUG:-minecraft015662-svg/ska-sir-ne-kam-diya-ha}"
+REPO_SLUG="${OMEGA_REPO_SLUG:-Sarthak345662/vpanel}"
 REPO_REF="${OMEGA_REPO_REF:-main}"
 ARCHIVE_URL="${OMEGA_REPO_ARCHIVE:-https://codeload.github.com/${REPO_SLUG}/tar.gz/refs/heads/${REPO_REF}}"
+RAW_BASE="https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}"
 
 clear_screen() {
     if [[ -t 1 ]]; then
@@ -38,6 +39,7 @@ fi
 INSTALL_DIR="${OMEGA_INSTALL_DIR:-/opt/omega-panel}"
 PANEL_PORT="${OMEGA_PORT:-5000}"
 NODE_PORT="${OMEGA_NODE_PORT:-5001}"
+LOG_FILE="${OMEGA_LOG_FILE:-/tmp/omega-install.log}"
 
 say()  { printf '\033[36m>\033[0m %s\n' "$*"; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
@@ -51,6 +53,9 @@ BRAND_NAME="${OMEGA_BRAND:-VIZION  PANEL}"
 BRAND_SUB="VPS · LXC · KVM control panel"
 BRAND_CREDIT="Credit: sartahk34 · SKa"
 BOX_W=46
+ANIM_ON=1
+[[ "${OMEGA_NO_ANIM:-0}" == "1" ]] && ANIM_ON=0
+[[ -t 1 ]] || ANIM_ON=0
 
 if [[ -t 1 ]]; then
     C_BORDER=$'\033[36m'; C_TITLE=$'\033[1;97m'; C_SUB=$'\033[96m'; C_DIM=$'\033[2;37m'; C_RST=$'\033[0m'
@@ -58,6 +63,61 @@ if [[ -t 1 ]]; then
 else
     C_BORDER=""; C_TITLE=""; C_SUB=""; C_DIM=""; C_RST=""; C_OK=""; C_BAD=""; C_WARN=""
 fi
+
+# ---------------------------------------------------------------------------
+# Animation helpers: a live spinner for long steps and staged progress lines.
+# ---------------------------------------------------------------------------
+SPIN_PID=""
+spin_start() {
+    local msg="${1:-working}"
+    [[ "$ANIM_ON" == "1" ]] || { printf '  %s ...\n' "$msg"; return 0; }
+    (
+        local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+        while :; do
+            for f in "${frames[@]}"; do
+                printf '\r  \033[36m%s\033[0m %s' "$f" "$msg"
+                sleep 0.08
+            done
+        done
+    ) &
+    SPIN_PID=$!
+}
+spin_stop() {
+    if [[ -n "$SPIN_PID" ]]; then
+        kill "$SPIN_PID" 2>/dev/null || true
+        wait "$SPIN_PID" 2>/dev/null || true
+        SPIN_PID=""
+        [[ "$ANIM_ON" == "1" ]] && printf '\r\033[K'
+    fi
+}
+trap 'spin_stop' EXIT
+
+# run_animated "label" cmd args...  -> runs the command, spinner + log on failure
+run_animated() {
+    local label="$1"; shift
+    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+    spin_start "$label"
+    if "$@" >>"$LOG_FILE" 2>&1; then
+        spin_stop
+        ok "$label"
+        return 0
+    fi
+    spin_stop
+    warn "$label failed — last lines from $LOG_FILE:"
+    tail -n 8 "$LOG_FILE" 2>/dev/null | sed 's/^/    /' || true
+    return 1
+}
+
+# Cosmetic pipeline animation: draw(checkpoints) — purely visual, no side effects.
+draw_steps() {
+    [[ "$ANIM_ON" == "1" ]] || return 0
+    local steps=("$@") i=0 total=${#steps[@]}
+    for step in "${steps[@]}"; do
+        i=$((i + 1))
+        printf '  \033[2;37m[%d/%d]\033[0m %s\n' "$i" "$total" "$step"
+        sleep 0.12
+    done
+}
 
 box_line() {   # box_line "text" "color"
     local text="$1" color="${2:-}" len l r
@@ -97,17 +157,24 @@ need_systemd() {
     command -v systemctl >/dev/null 2>&1 || die "systemd is required (Ubuntu/Debian server)."
 }
 
+# ---------------------------------------------------------------------------
+# Panel install / update / repair / doctor
+# ---------------------------------------------------------------------------
 install_panel() {
     need_root
     need_systemd
+    echo
     say "Installing Vizion Panel from ${ROOT_DIR} ..."
-    bash "$ROOT_DIR/setup.sh" "$@"
+    draw_steps "Checking systemd and Python" "Installing LXC / KVM / Incus stack" \
+               "Creating the panel virtualenv" "Seeding the local node" "Starting 24/7 services"
+    run_animated "Installing the panel (setup.sh)" bash "$ROOT_DIR/setup.sh" "$@" || die "Install failed. See $LOG_FILE"
     ok "Install finished."
     echo
     echo "  Panel URL : http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PANEL_PORT}"
     echo "  Login     : admin / admin   (change it after first login)"
     echo "  Password  : /var/lib/omega-panel/first_admin_credentials.txt"
     echo "  Status    : sudo bash omega.sh --status"
+    echo "  Bot owner : Admin -> Settings -> Integrations -> Bot owner Discord ID"
 }
 
 uninstall_panel() {
@@ -123,50 +190,249 @@ uninstall_panel() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Node installation: LXC / KVM / Incus are three different stacks.
+# ---------------------------------------------------------------------------
+node_type_menu() {
+    clear_screen
+    print_logo
+    printf '  %s[ NODE INSTALL ]%s\n' "$C_SUB" "$C_RST"
+    echo "    1) LXC node    containers only (no QEMU/libvirt)"
+    echo "    2) KVM node    QEMU/KVM + libvirt + /dev/kvm check"
+    echo "    3) Incus node  containers + QEMU virtual machines"
+    echo "    4) Connect an installed node to a panel (SSH command)"
+    echo "    5) Node status"
+    echo "    0) Back"
+    echo
+    read -rp "  Choose [0-5]: " pick || return 0
+    case "${pick:-}" in
+        1) install_node_type lxc ;;
+        2) install_node_type kvm ;;
+        3) install_node_type incus ;;
+        4) node_connect ;;
+        5) node_status ;;
+        0|q|Q) return 0 ;;
+        *) warn "Please choose 0-5." ;;
+    esac
+}
+
+install_node_type() {
+    local type="$1"
+    need_root
+    need_systemd
+    case "$type" in
+        lxc)   say "Installing an LXC node (plain LXC + Incus container backend, no KVM packages)" ;;
+        kvm)   say "Installing a KVM node (QEMU/KVM + libvirt, /dev/kvm verified)" ;;
+        incus) say "Installing an Incus node (system containers + QEMU virtual machines)" ;;
+        *) die "Unknown node type: $type" ;;
+    esac
+    echo
+    if [[ "$type" == "kvm" ]]; then
+        draw_steps "Installing QEMU/KVM + libvirt" "Checking /dev/kvm" "Installing the node agent" "Waiting for the agent health endpoint"
+    elif [[ "$type" == "lxc" ]]; then
+        draw_steps "Installing LXC userland" "Installing Incus (container backend)" "Installing the node agent" "Waiting for the agent health endpoint"
+    else
+        draw_steps "Installing Incus + QEMU" "Initialising Incus storage/network" "Installing the node agent" "Waiting for the agent health endpoint"
+    fi
+    run_animated "Node stack (${type})" bash "$ROOT_DIR/scripts/omega-node-install.sh" "--type=${type}" \
+        || die "Node install failed. See $LOG_FILE"
+    echo
+    ok "Node stack ready: ${type}"
+    echo "  Agent health : http://127.0.0.1:${NODE_PORT}/api/health"
+    echo "  Now connect it to the panel: menu 6 -> 4, or:"
+    echo "  sudo bash omega.sh --node-connect --panel http://PANEL_IP:${PANEL_PORT} --key KEY --name NAME --url http://THIS_IP:${NODE_PORT} --type ${type}"
+}
+
+node_status() {
+    echo
+    echo "Node status"
+    echo "------------------"
+    bash "$ROOT_DIR/scripts/omega-node-install.sh" --check || true
+    echo
+    if command -v incus >/dev/null 2>&1; then
+        echo "  incus      : $(incus --version 2>/dev/null || echo present)"
+    else
+        echo "  incus      : not installed"
+    fi
+    if [[ -e /dev/kvm ]]; then echo "  /dev/kvm   : available"; else echo "  /dev/kvm   : unavailable (no hardware acceleration)"; fi
+    if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+        echo "  qemu       : $(qemu-system-x86_64 --version 2>/dev/null | head -n1)"
+    else
+        echo "  qemu       : not installed"
+    fi
+    if command -v lxc-create >/dev/null 2>&1; then echo "  lxc        : $(lxc-create --version 2>/dev/null || echo present)"; else echo "  lxc        : not installed"; fi
+}
+
 node_connect() {
     need_systemd
-    echo
-    echo "Connect this server as a node of a Vizion panel."
-    echo "The enrollment key is on the panel: Admin -> Node Install / Uninstall."
-    echo
-    read -rp "Panel URL [http://127.0.0.1:${PANEL_PORT}]: " panel || true
-    panel="${panel:-http://127.0.0.1:${PANEL_PORT}}"
-    read -rp "Enrollment key: " enroll_key || true
-    [[ -n "${enroll_key:-}" ]] || die "Enrollment key is required."
-    read -rp "Node name [$(hostname -s 2>/dev/null || hostname)]: " node_name || true
-    node_name="${node_name:-$(hostname -s 2>/dev/null || hostname)}"
+    local panel="" enroll_key="" node_name="" node_url="" node_bind="" node_type="lxc" panel_host
 
-    local panel_host node_bind default_node_url chosen_bind
-    panel_host="$(printf '%s' "$panel" | sed -E 's#^https?://([^/:]+).*#\1#')"
-    if [[ "$panel_host" == "127.0.0.1" || "$panel_host" == "localhost" ]]; then
-        node_bind="127.0.0.1"
-        default_node_url="http://127.0.0.1:${NODE_PORT}"
-    else
-        node_bind="0.0.0.0"
-        default_node_url="http://$(hostname -I 2>/dev/null | awk '{print $1}'):${NODE_PORT}"
+    # Non-interactive flags (used by the panel's generated one-line command).
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --panel) panel="${2:-}"; shift 2 ;;
+            --key) enroll_key="${2:-}"; shift 2 ;;
+            --name) node_name="${2:-}"; shift 2 ;;
+            --url) node_url="${2:-}"; shift 2 ;;
+            --type) node_type="${2:-}"; shift 2 ;;
+            --bind) node_bind="${2:-}"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+
+    if [[ -z "$panel" ]]; then
+        echo
+        echo "Connect this server as a node of a Vizion panel."
+        echo "The enrollment key is on the panel: Admin -> Nodes -> Add Node."
+        echo
+        read -rp "Panel URL [http://127.0.0.1:${PANEL_PORT}]: " panel || true
+        panel="${panel:-http://127.0.0.1:${PANEL_PORT}}"
+        read -rp "Enrollment key: " enroll_key || true
+        read -rp "Node name [$(hostname -s 2>/dev/null || hostname)]: " node_name || true
+        node_name="${node_name:-$(hostname -s 2>/dev/null || hostname)}"
+        read -rp "Node type (lxc/kvm/incus) [lxc]: " node_type || true
+        node_type="${node_type:-lxc}"
     fi
-    read -rp "Node agent bind address [${node_bind}]: " chosen_bind || true
-    node_bind="${chosen_bind:-$node_bind}"
-    [[ "$node_bind" == "127.0.0.1" ]] && default_node_url="http://127.0.0.1:${NODE_PORT}"
-    read -rp "Node URL the panel should reach [${default_node_url}]: " node_url || true
-    node_url="${node_url:-$default_node_url}"
+    [[ -n "${enroll_key:-}" ]] || die "Enrollment key is required (Admin -> Nodes -> Add Node)."
+    node_name="${node_name:-$(hostname -s 2>/dev/null || hostname)}"
+    case "$node_type" in lxc|kvm|incus) ;; *) warn "Unknown type '$node_type', using lxc"; node_type=lxc ;; esac
+
+    panel_host="$(printf '%s' "$panel" | sed -E 's#^https?://([^/:]+).*#\1#')"
+    if [[ -z "${node_bind:-}" ]]; then
+        if [[ "$panel_host" == "127.0.0.1" || "$panel_host" == "localhost" ]]; then
+            node_bind="127.0.0.1"
+        else
+            node_bind="0.0.0.0"
+        fi
+    fi
+    if [[ -z "${node_url:-}" ]]; then
+        if [[ "$node_bind" == "127.0.0.1" ]]; then
+            node_url="http://127.0.0.1:${NODE_PORT}"
+        else
+            node_url="http://$(hostname -I 2>/dev/null | awk '{print $1}'):${NODE_PORT}"
+        fi
+    fi
 
     if [[ "$(id -u)" -eq 0 ]]; then
-        say "Installing the node agent (bind ${node_bind}) ..."
-        bash "$ROOT_DIR/scripts/omega-node-install.sh" "--bind=${node_bind}"
+        run_animated "Installing the ${node_type} node agent (bind ${node_bind})" \
+            bash "$ROOT_DIR/scripts/omega-node-install.sh" "--bind=${node_bind}" "--type=${node_type}" \
+            || warn "Agent install reported a problem; continuing with the connect step."
     else
-        warn "Not root: skipping agent install. Run 'sudo bash scripts/omega-node-install.sh --bind=${node_bind}' first if the agent is missing."
+        warn "Not root: skipping agent install. Run 'sudo bash scripts/omega-node-install.sh --bind=${node_bind} --type=${node_type}' first."
     fi
 
-    say "Registering this node with the panel ..."
-    bash "$ROOT_DIR/scripts/omega-node-connect.sh" \
-        --panel "$panel" --key "$enroll_key" --name "$node_name" --url "$node_url"
-    ok "Node '${node_name}' connected to ${panel}"
-    if [[ "$node_bind" != "127.0.0.1" ]]; then
-        warn "Port ${NODE_PORT} should only be open to the panel, e.g.: ufw allow from PANEL_IP to any port ${NODE_PORT} proto tcp"
+    spin_start "Registering ${node_name} with ${panel}"
+    if bash "$ROOT_DIR/scripts/omega-node-connect.sh" \
+        --panel "$panel" --key "$enroll_key" --name "$node_name" --url "$node_url" >>"$LOG_FILE" 2>&1; then
+        spin_stop
+        ok "Node '${node_name}' connected to ${panel} (${node_type})"
+    else
+        spin_stop
+        warn "Could not register the node. Last log lines:"
+        tail -n 8 "$LOG_FILE" 2>/dev/null | sed 's/^/    /' || true
+        die "Check the panel URL, enrollment key and that port ${NODE_PORT} is reachable."
+    fi
+    if [[ "$node_bind" != "127.0.0.1" ]] && command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; then
+        say "Allowing node agent port ${NODE_PORT} from ${panel_host} only"
+        ufw allow from "$panel_host" to any port "$NODE_PORT" proto tcp >/dev/null 2>&1 || true
     fi
 }
 
+# ---------------------------------------------------------------------------
+# Panel user creation (CLI) - creates a login without the web UI.
+# ---------------------------------------------------------------------------
+create_panel_user() {
+    need_root
+    echo
+    echo "Create a panel user"
+    echo "-------------------"
+    local username email password role max_vps bot_token
+    read -rp "Username: " username || true
+    [[ -n "${username:-}" ]] || die "Username is required."
+    read -rp "Email [${username}@vps.local]: " email || true
+    email="${email:-${username}@vps.local}"
+    read -rp "Password (blank = generate): " password || true
+    if [[ -z "${password:-}" ]]; then
+        password="$(openssl rand -base64 12 2>/dev/null || head -c 12 /dev/urandom | base64)"
+    fi
+    read -rp "Max VPS [1]: " max_vps || true
+    max_vps="${max_vps:-1}"
+    read -rp "Admin user? [y/N]: " role || true
+    local is_admin=0
+    [[ "${role:-}" =~ ^[Yy] ]] && is_admin=1
+
+    local py="${INSTALL_DIR}/venv/bin/python"
+    [[ -x "$py" ]] || die "Panel is not installed (missing ${py}). Choose Install first."
+    [[ -f "${INSTALL_DIR}/app.py" ]] || die "Panel code is missing in ${INSTALL_DIR}."
+
+    local out
+    out="$(cd "$INSTALL_DIR" && OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
+import json
+import secrets
+import sys
+
+username, email, password, is_admin, max_vps = sys.argv[1:6]
+is_admin = int(is_admin)
+max_vps = int(max_vps)
+
+import app as panel
+
+panel.init_db()
+try:
+    panel.migrate_nodes()
+except Exception:
+    pass
+conn = panel.get_db()
+columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+    print(json.dumps({"error": f"user '{username}' already exists"}))
+    raise SystemExit(1)
+fields = ["username", "email", "password", "is_admin", "api_key"]
+values = [username, email, panel.hash_password(password), is_admin, panel.generate_api_key()]
+if "role" in columns:
+    fields.append("role")
+    values.append("admin" if is_admin else "user")
+if "max_vps" in columns:
+    fields.append("max_vps")
+    values.append(max_vps)
+bot_token = None
+if "bot_api_token_hash" in columns:
+    import hashlib
+    bot_token = "omega_bot_" + secrets.token_urlsafe(32)
+    fields.append("bot_api_token_hash")
+    values.append(hashlib.sha256(bot_token.encode()).hexdigest())
+placeholders = ",".join("?" for _ in fields)
+conn.execute(f"INSERT INTO users ({','.join(fields)}) VALUES ({placeholders})", values)
+conn.commit()
+row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+conn.close()
+print(json.dumps({"id": row["id"], "username": username, "admin": bool(is_admin),
+                  "max_vps": max_vps, "bot_token": bot_token}))
+PY
+)" || { echo "$out"; die "User creation failed."; }
+
+    echo
+    ok "Panel user created"
+    "$py" - "$out" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+print(f"  username : {data['username']}")
+print(f"  user id  : #{data['id']}")
+print(f"  admin    : {'yes' if data['admin'] else 'no'}")
+print(f"  max vps  : {data['max_vps']}")
+if data.get("bot_token"):
+    print(f"  bot token: {data['bot_token']}")
+    print("             (use it for /api/bot/* and the Discord account link)")
+PY
+    echo "  login at : http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PANEL_PORT}/login"
+    echo "  password : (the one you typed or the generated value above)"
+}
+
+# ---------------------------------------------------------------------------
+# Port forwarding / status / update / repair / doctor
+# ---------------------------------------------------------------------------
 port_forward() {
     clear_screen
     bash "$ROOT_DIR/scripts/omega-portforward.sh" --interactive
@@ -345,6 +611,9 @@ PY
     return "$bad"
 }
 
+# ---------------------------------------------------------------------------
+# Menu
+# ---------------------------------------------------------------------------
 main_menu() {
     while true; do
         clear_screen
@@ -356,34 +625,61 @@ main_menu() {
         echo "    4) Doctor                (check errors + logs)"
         printf '\n  %s[ MANAGE ]%s\n' "$C_SUB" "$C_RST"
         echo "    5) Panel status"
-        echo "    6) Node install + connect"
-        echo "    7) Port forwarding"
+        echo "    6) Nodes                 (install LXC / KVM / Incus, connect by IP)"
+        echo "    7) Create panel user"
+        echo "    8) Port forwarding"
         printf '\n  %s[ DANGER ]%s\n' "$C_SUB" "$C_RST"
-        echo "    8) Uninstall panel"
+        echo "    9) Uninstall panel"
         echo "    0) Exit"
         echo
-        read -rp "  Choose [0-8]: " choice || exit 0
+        read -rp "  Choose [0-9]: " choice || exit 0
         case "${choice:-}" in
             1) install_panel ;;
             2) update_panel ;;
             3) fix_panel ;;
             4) doctor_panel || true ;;
             5) panel_status ;;
-            6) node_connect ;;
-            7) port_forward ;;
-            8) uninstall_panel ;;
+            6) node_type_menu ;;
+            7) create_panel_user ;;
+            8) port_forward ;;
+            9) uninstall_panel ;;
             0|q|Q) exit 0 ;;
-            *) warn "Please choose 0-8." ;;
+            *) warn "Please choose 0-9." ;;
         esac
         echo
         read -rp "Press Enter to return to the menu..." _ || exit 0
     done
 }
 
+# ---------------------------------------------------------------------------
+# CLI flags
+# ---------------------------------------------------------------------------
+NODE_TYPE_ARG=""
+NODE_CONNECT_ARGS=()
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --type=*) NODE_TYPE_ARG="${1#*=}"; shift ;;
+        --type) NODE_TYPE_ARG="${2:-}"; shift 2 ;;
+        --node-connect) NODE_CONNECT_ARGS+=("--node-connect"); shift ;;
+        --panel|--key|--name|--url|--bind)
+            NODE_CONNECT_ARGS+=("$1" "${2:-}"); shift 2 ;;
+        *) POSITIONAL+=("$1"); shift ;;
+    esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
 case "${1:-}" in
     --install) shift; install_panel "$@" ;;
     --uninstall) uninstall_panel ;;
     --node) node_connect ;;
+    --node-connect)
+        shift
+        node_connect "${NODE_CONNECT_ARGS[@]+"${NODE_CONNECT_ARGS[@]}"}" ;;
+    --node-install) install_node_type "${NODE_TYPE_ARG:-lxc}" ;;
+    --node-types|--nodes) node_type_menu ;;
+    --node-status) node_status ;;
+    --create-user|--user-create|--adduser) create_panel_user ;;
     --port-forward) port_forward ;;
     --status) panel_status ;;
     --update) update_panel ;;
@@ -395,18 +691,30 @@ case "${1:-}" in
         cat <<EOF
 Usage: sudo bash omega.sh [option]
 
-  (no option)     interactive menu
-  --install       install the panel (runs setup.sh)
-  --uninstall     stop and remove the panel services
-  --node          install this host as a node and connect it to a panel
-  --port-forward  create/list/remove socat port forwards
-  --status        service and node agent health
-  --update        download latest code + re-run the installer
-  --fix           repair deps/permissions and restart services
-  --doctor        check code, services, port and show logs
+  (no option)        interactive menu
+  --install          install the panel (runs setup.sh)
+  --uninstall        stop and remove the panel services
+  --node             install this host as a node and connect it (guided)
+  --node-connect     non-interactive connect, needs:
+                       --panel URL --key KEY --name NAME --url NODE_URL [--type lxc|kvm|incus]
+  --node-install     install only the node stack: --type lxc | kvm | incus
+  --node-types       interactive node install menu
+  --node-status      show incus / qemu / lxc / kvm capabilities
+  --create-user      create a panel user from the CLI
+  --port-forward     create/list/remove socat port forwards
+  --status           service and node agent health
+  --update           download latest code + re-run the installer
+  --fix              repair deps/permissions and restart services
+  --doctor           check code, services, port and show logs
+
+Node types (each installs a different stack):
+  lxc    plain LXC containers only (no QEMU/libvirt packages)
+  kvm    QEMU/KVM + libvirt, /dev/kvm verified before the first VM
+  incus  Incus containers + QEMU virtual machines
 
 One line (no clone):
-  bash <(curl -sL https://raw.githubusercontent.com/${REPO_SLUG}/${REPO_REF}/omega.sh)
+  curl -fsSL ${RAW_BASE}/omega.sh | sudo bash
+  curl -fsSL ${RAW_BASE}/omega.sh | sudo bash -s -- --install
 
 Default login after install: admin / admin
 Credit: sartahk34 · SKa

@@ -4989,14 +4989,18 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                     <input type="text" name="hostname" class="form-control" placeholder="e.g. us1.example.com or 203.0.113.5" required>
                 </div>
                 <div class="form-group">
-                    <label>Node URL (for remote nodes)</label>
-                    <input type="text" name="node_url" class="form-control" placeholder="e.g. http://203.0.113.5:5001">
-                    <small class="text-dim" style="font-size:11px;">Leave empty for local node. Remote nodes need the agent running.</small>
+                    <label>VPS type (install stack)</label>
+                    <select name="node_type" class="form-control">
+                        <option value="lxc">LXC node — containers only</option>
+                        <option value="kvm">KVM node — QEMU/KVM + libvirt</option>
+                        <option value="incus">Incus node — containers + VMs</option>
+                    </select>
+                    <small class="text-dim" style="font-size:11px;">Each type installs a different stack. The panel shows the exact command after you click Add.</small>
                 </div>
                 <div class="form-group">
-                    <label>API Key (for remote nodes)</label>
-                    <input type="text" name="api_key" class="form-control" placeholder="Paste the node agent's API key">
-                    <small class="text-dim" style="font-size:11px;">Shown in the node agent's startup output.</small>
+                    <label>Agent port</label>
+                    <input type="number" name="node_port" class="form-control" value="5001" min="1" max="65535">
+                    <small class="text-dim" style="font-size:11px;">Node URL is built as http://IP:PORT. Leave the API key empty for a new node.</small>
                 </div>
                 <div class="form-group">
                     <label>Max VPS</label>
@@ -9596,6 +9600,31 @@ def migrate_nodes():
         conn.execute("UPDATE users SET role = 'owner' WHERE is_admin = 1 AND id = (SELECT MIN(id) FROM users WHERE is_admin = 1)")
     except:
         pass
+    for _table, _column, _definition in (
+        ("nodes", "node_type", "TEXT DEFAULT 'lxc'"),
+        ("nodes", "total_ram_mb", "INTEGER DEFAULT 0"),
+        ("settings", "node_enroll_key", "TEXT DEFAULT ''"),
+        ("settings", "bot_owner_id", "TEXT DEFAULT ''"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE {_table} ADD COLUMN {_column} {_definition}")
+        except Exception:
+            pass
+    # A fresh install must always have one online local node; without it every
+    # VPS creation used to fail with "No online node is available".
+    try:
+        local = conn.execute("SELECT id FROM nodes WHERE is_local = 1 ORDER BY id LIMIT 1").fetchone()
+        if local:
+            conn.execute("UPDATE nodes SET status = 'online' WHERE id = ?", (local["id"],))
+        else:
+            import platform as _platform
+            conn.execute(
+                "INSERT INTO nodes (name, hostname, node_url, api_key, max_vps, is_local, status)"
+                " VALUES (?, ?, '', '', 500, 1, 'online')",
+                ("Local", _platform.node() or "localhost"),
+            )
+    except Exception:
+        app.logger.exception("Could not ensure the local node record")
     conn.commit()
     conn.close()
 def call_node_api(node_url, api_key, endpoint, method='GET', data=None, files=None,
@@ -11835,28 +11864,302 @@ def add_local_node():
     conn.close()
     flash('Local node added', 'success')
     return redirect(url_for('node_management'))
+NODE_INSTALL_TYPES = {
+    "lxc": ("LXC node", "Plain LXC + Incus container backend. No KVM/QEMU packages are installed."),
+    "kvm": ("KVM node", "QEMU/KVM + libvirt, with a /dev/kvm check before the first VM."),
+    "incus": ("Incus node", "Full Incus install: system containers and QEMU virtual machines."),
+}
+
+
+def _omega_node_enroll_key():
+    """Enrollment key used by the node installer (settings.node_enroll_key)."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id, node_enroll_key FROM settings LIMIT 1").fetchone()
+        if not row:
+            return ""
+        key = str(row["node_enroll_key"] or "").strip()
+        if not key:
+            key = secrets.token_hex(20)
+            conn.execute("UPDATE settings SET node_enroll_key = ? WHERE id = ?", (key, row["id"]))
+            conn.commit()
+        return key
+    finally:
+        conn.close()
+
+
+def _omega_panel_public_url():
+    settings = get_settings()
+    try:
+        value = str(settings["panel_public_url"] or "").strip()
+    except (KeyError, TypeError):
+        value = ""
+    return value.rstrip("/") or request.url_root.rstrip("/")
+
+
+def _omega_node_connect_command(node, node_type=None, panel_url=None, key=None):
+    """One-line command that installs the chosen stack and connects the node."""
+    try:
+        stored_type = node["node_type"]
+    except (KeyError, IndexError, TypeError):
+        stored_type = None
+    node_type = str(node_type or stored_type or "lxc").strip().lower()
+    if node_type not in NODE_INSTALL_TYPES:
+        node_type = "lxc"
+    panel_url = str(panel_url or _omega_panel_public_url()).rstrip("/")
+    key = key or _omega_node_enroll_key()
+    try:
+        node_url = str(node["node_url"] or "").rstrip("/")
+        node_name = node["name"]
+        host = node["hostname"] or ""
+    except (KeyError, IndexError, TypeError):
+        node_url, node_name, host = "", "node-1", ""
+    if not node_url:
+        node_url = f"http://{host}:5001"
+    return (
+        "curl -fsSL https://raw.githubusercontent.com/Sarthak345662/vpanel/main/omega.sh "
+        f"| sudo bash -s -- --node-connect --panel {shlex.quote(panel_url)}"
+        f" --key {shlex.quote(key)} --name {shlex.quote(str(node_name))}"
+        f" --url {shlex.quote(node_url)} --type {shlex.quote(node_type)}"
+    )
+
+
 @app.route('/nodes/add', methods=['POST'])
 @admin_required
 def add_node():
-    name = request.form.get('name')
-    hostname = request.form.get('hostname')
-    node_url = request.form.get('node_url', '')
-    api_key = request.form.get('api_key', '')
+    """Register a node from a name and its VPS IP.
+
+    The agent does not have to be installed yet: the node is stored as
+    ``pending`` and the panel immediately shows the one-line command that
+    installs the selected stack (LXC / KVM / Incus) and connects the node back.
+    """
+    name = (request.form.get('name') or '').strip()
+    address = (request.form.get('hostname') or request.form.get('ip') or '').strip()
+    node_type = (request.form.get('node_type') or 'lxc').strip().lower()
+    if node_type in ('vm', 'qemu', 'incus-vm'):
+        node_type = 'kvm'
+    if node_type not in NODE_INSTALL_TYPES:
+        node_type = 'lxc'
+    port = re.sub(r'\D', '', request.form.get('node_port') or '') or '5001'
     max_vps = request.form.get('max_vps', 500)
-    if not name or not hostname:
-        flash('Name and hostname are required', 'error')
+    api_key = (request.form.get('api_key') or '').strip()
+    node_url = (request.form.get('node_url') or '').strip()
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{1,63}', name):
+        flash('Node name must be 2-64 characters: letters, digits, dot, dash or underscore.', 'error')
         return redirect(url_for('node_management'))
-    if node_url:
-        resp, code = call_node_api(node_url, api_key, '/api/health')
-        if code != 200 or resp.get('error'):
-            flash(f"Cannot connect to node: {resp.get('error', 'Connection failed')}", 'error')
-            return redirect(url_for('node_management'))
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{2,253}', address):
+        flash('Enter the VPS IP address or hostname, for example 203.0.113.5', 'error')
+        return redirect(url_for('node_management'))
+    if not node_url:
+        node_url = f"http://{address}:{port}"
     conn = get_db()
-    conn.execute('INSERT INTO nodes (name, hostname, node_url, api_key, max_vps, is_local) VALUES (?, ?, ?, ?, ?, 0)', (name, hostname, node_url, api_key, max_vps))
+    existing = conn.execute('SELECT id FROM nodes WHERE name = ?', (name,)).fetchone()
+    if existing:
+        conn.close()
+        flash(f'A node named {name} already exists.', 'error')
+        return redirect(url_for('node_management'))
+    status = 'pending'
+    if api_key:
+        resp, code = call_node_api(node_url, api_key, '/api/health', timeout=8)
+        if code == 200 and not (isinstance(resp, dict) and resp.get('error')):
+            status = 'online'
+    cursor = conn.execute(
+        'INSERT INTO nodes (name, hostname, node_url, api_key, max_vps, is_local, status)'
+        ' VALUES (?, ?, ?, ?, ?, 0, ?)',
+        (name, address, node_url, api_key, max_vps, status),
+    )
+    node_id = cursor.lastrowid
+    try:
+        conn.execute('UPDATE nodes SET node_type = ? WHERE id = ?', (node_type, node_id))
+    except Exception:
+        app.logger.debug('nodes.node_type column missing; rerun migrate_nodes()')
     conn.commit()
     conn.close()
-    flash('Node added successfully', 'success')
-    return redirect(url_for('node_management'))
+    add_log('info', f'Node {name} ({address}) registered as {node_type} ({status})', 'node')
+    flash(f'Node {name} added. Run the command below on {address} to finish the connection.', 'success')
+    return redirect(url_for('node_connect_page', node_id=node_id))
+
+
+@app.route('/nodes/connect/<int:node_id>')
+@admin_required
+def node_connect_page(node_id):
+    conn = get_db()
+    node = conn.execute('SELECT * FROM nodes WHERE id = ?', (node_id,)).fetchone()
+    conn.close()
+    if not node:
+        flash('Node not found', 'error')
+        return redirect(url_for('node_management'))
+    try:
+        node_type = str(node['node_type'] or 'lxc').lower()
+    except (KeyError, IndexError):
+        node_type = 'lxc'
+    if node_type not in NODE_INSTALL_TYPES:
+        node_type = 'lxc'
+    return render_template(
+        'node_connect.html', node=node, node_type=node_type,
+        install_types=NODE_INSTALL_TYPES,
+        command=_omega_node_connect_command(node, node_type),
+        enroll_key=_omega_node_enroll_key(),
+        panel_url=_omega_panel_public_url(),
+    )
+
+
+@app.route('/nodes/command', methods=['POST'])
+@admin_required
+def node_command_preview():
+    """JSON preview of the install command used by the Add Node dialog."""
+    data = request.get_json(silent=True) or request.form
+    name = str(data.get('name') or 'node-1').strip()
+    address = str(data.get('ip') or data.get('hostname') or '').strip()
+    node_type = str(data.get('node_type') or 'lxc').strip().lower()
+    if node_type in ('vm', 'qemu', 'incus-vm'):
+        node_type = 'kvm'
+    if node_type not in NODE_INSTALL_TYPES:
+        node_type = 'lxc'
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{1,63}', name):
+        return jsonify({'error': 'Invalid node name'}), 400
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{2,253}', address):
+        return jsonify({'error': 'Enter a valid IP address or hostname'}), 400
+    pseudo = {'name': name, 'node_url': f'http://{address}:5001',
+              'node_type': node_type, 'hostname': address}
+    return jsonify({
+        'command': _omega_node_connect_command(pseudo, node_type),
+        'panel_url': _omega_panel_public_url(),
+        'enroll_key': _omega_node_enroll_key(),
+        'node_type': node_type,
+    })
+
+
+@app.route('/nodes/status/<int:node_id>')
+@admin_required
+def node_connection_status(node_id):
+    """Polled by the connect page; flips the node to online once the agent answers."""
+    conn = get_db()
+    node = conn.execute('SELECT * FROM nodes WHERE id = ?', (node_id,)).fetchone()
+    conn.close()
+    if not node:
+        return jsonify({'error': 'not found'}), 404
+    status = str(node['status'] or 'pending').lower()
+    if node['node_url'] and status != 'online':
+        resp, code = call_node_api(node['node_url'], node['api_key'], '/api/health', timeout=5)
+        if code == 200 and not (isinstance(resp, dict) and resp.get('error')):
+            conn = get_db()
+            conn.execute("UPDATE nodes SET status = 'online' WHERE id = ?", (node_id,))
+            conn.commit()
+            conn.close()
+            status = 'online'
+    return jsonify({'name': node['name'], 'status': status, 'online': status == 'online',
+                    'vps_count': node['vps_count'], 'max_vps': node['max_vps']})
+
+
+EMBEDDED_TEMPLATES["node_connect.html"] = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect node · {{ node['name'] }}</title>
+<style>
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:#070d18;color:#e6eef9;font:14px/1.5 system-ui,sans-serif;
+ background-image:radial-gradient(ellipse 70% 50% at 50% -10%,rgba(64,190,255,.16),transparent)}
+.wrap{max-width:880px;margin:0 auto;padding:34px 20px 70px}
+a{color:#63cdff}
+.head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+h1{margin:0 0 4px;font-size:23px;letter-spacing:-.4px}
+.sub{color:#8ea3bd;font-size:13px;margin:0}
+.pill{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:6px 13px;
+ font-size:12px;font-weight:600;border:1px solid #23465f;background:#0e1b2b;color:#9fb6cc}
+.pill .dot{width:8px;height:8px;border-radius:50%;background:#f6c453;animation:pulse 1.4s infinite}
+.pill.on{border-color:#1d6b4f;color:#5fe3a1}.pill.on .dot{background:#2fe08b}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}
+.card{margin-top:18px;background:linear-gradient(180deg,#0e1a2b,#0b1524);border:1px solid #1d2c40;
+ border-radius:16px;padding:20px;animation:rise .45s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+h2{margin:0 0 12px;font-size:15px;letter-spacing:.2px}
+.types{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.type{border:1px solid #223349;border-radius:12px;padding:12px 14px;background:#0b1727;font-size:12px;color:#93a9c2}
+.type b{display:block;color:#dbe9f8;font-size:13px;margin-bottom:3px}
+.type.sel{border-color:#3b8fd4;box-shadow:0 0 0 1px #3b8fd4 inset,0 10px 30px rgba(26,128,200,.18)}
+pre{position:relative;margin:0;padding:15px 15px 15px 16px;border-radius:12px;background:#050b14;
+ border:1px solid #1b2c42;overflow-x:auto;font:12.5px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;
+ white-space:pre-wrap;word-break:break-word;color:#bfe3ff;min-height:70px}
+button{cursor:pointer;border:0;border-radius:10px;padding:10px 16px;font-weight:700;font-size:12.5px;
+ background:linear-gradient(180deg,#39a9f0,#1f7fd0);color:#04121f}
+button.ghost{background:#122234;color:#cfe2f4;border:1px solid #294260}
+.row{display:flex;gap:9px;flex-wrap:wrap;margin-top:12px}
+.steps{display:grid;gap:10px;margin-top:6px}
+.step{display:flex;align-items:center;gap:12px;color:#8ea3bd;font-size:13px}
+.step .bub{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:11px;
+ font-weight:700;border:1px solid #2a4157;background:#0a1523;color:#7f97af;flex:0 0 auto}
+.step.active{color:#e6eef9}
+.step.active .bub{border-color:#3b8fd4;color:#9fe0ff;animation:spinGlow 1.6s linear infinite}
+.step.done{color:#5fe3a1}.step.done .bub{border-color:#1d6b4f;color:#5fe3a1;background:#0d221a}
+@keyframes spinGlow{0%{box-shadow:0 0 0 0 rgba(59,143,212,.55)}100%{box-shadow:0 0 0 9px rgba(59,143,212,0)}}
+canvas{position:fixed;inset:0;pointer-events:none;z-index:5}
+.bar{height:4px;border-radius:99px;background:#13263b;overflow:hidden;margin-top:14px}
+.bar i{display:block;height:100%;width:12%;border-radius:99px;
+ background:linear-gradient(90deg,#2fe08b,#39a9f0);animation:travel 1.8s ease-in-out infinite}
+@keyframes travel{0%{width:8%;margin-left:0}50%{width:45%;margin-left:30%}100%{width:8%;margin-left:92%}}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:6px 12px;font-size:13px;margin-top:6px}
+.kv span:nth-child(odd){color:#8499b2}.kv code{color:#cfe6fb}
+</style></head><body><canvas id="fx"></canvas><div class="wrap">
+<div class="head"><div><h1>Connect node <span style="color:#63cdff">{{ node['name'] }}</span></h1>
+<p class="sub">Run the command on {{ node['hostname'] }}. This page turns green automatically when the node reports in.</p></div>
+<span class="pill {{ 'on' if node['status'] == 'online' else '' }}" id="statePill"><span class="dot"></span><span id="stateText">{{ node['status']|upper }}</span></span></div>
+
+<div class="card"><h2>1 · Choose the virtualisation stack</h2>
+<div class="types">{% for key, meta in install_types.items() %}
+<div class="type {{ 'sel' if key == node_type else '' }}"><b>{{ meta[0] }}</b>{{ meta[1] }}</div>
+{% endfor %}</div>
+<p class="sub" style="margin-top:10px">Selected: <b>{{ install_types[node_type][0] }}</b> · the command below installs exactly this stack.</p></div>
+
+<div class="card"><h2>2 · Run this on the new VPS</h2>
+<pre id="cmd">{{ command }}</pre>
+<div class="row"><button onclick="copyCmd()">Copy command</button>
+<button class="ghost" onclick="location.reload()">Refresh status</button>
+<a class="ghost" href="{{ url_for('node_management') }}" style="text-decoration:none;padding:10px 16px;border:1px solid #294260;border-radius:10px;color:#cfe2f4">All nodes</a></div>
+<div class="bar"><i></i></div></div>
+
+<div class="card"><h2>3 · Live connection progress</h2>
+<div class="steps" id="steps">
+<div class="step active" id="s1"><span class="bub">1</span>Node registered in the panel</div>
+<div class="step" id="s2"><span class="bub">2</span>Installing the {{ install_types[node_type][0]|lower }} stack</div>
+<div class="step" id="s3"><span class="bub">3</span>Starting the node agent on port 5001</div>
+<div class="step" id="s4"><span class="bub">4</span>Connected — VPS creation enabled</div></div>
+<div class="kv" style="margin-top:16px">
+<span>Panel URL</span><code>{{ panel_url }}</code>
+<span>Node URL</span><code>{{ node['node_url'] or 'http://' ~ node['hostname'] ~ ':5001' }}</code>
+<span>Enrollment key</span><code>{{ enroll_key }}</code>
+<span>Type</span><code>{{ node_type }}</code></div></div>
+
+<p class="sub" style="margin-top:22px">Ticket: the same command is available in <a href="{{ url_for('node_management') }}">Nodes</a> and in the CLI menu <code>sudo bash omega.sh --node-types</code>.</p>
+</div><script>
+const NODE_ID={{ node['id'] }};
+function copyCmd(){const t=document.getElementById('cmd').innerText.trim();
+ navigator.clipboard.writeText(t).then(()=>{const b=document.querySelector('button');const o=b.innerText;b.innerText='Copied ✓';setTimeout(()=>b.innerText=o,1400)})}
+function mark(i,done){const el=document.getElementById('s'+i);if(!el)return;
+ el.classList.remove('active');el.classList.add(done?'done':'active')}
+async function poll(){
+ try{const r=await fetch('/nodes/status/'+NODE_ID,{headers:{Accept:'application/json'}});
+  if(r.ok){const j=await r.json();
+   mark(1,true);mark(2,j.status!=='pending'||j.online);mark(3,j.online);mark(4,j.online);
+   const pill=document.getElementById('statePill');const txt=document.getElementById('stateText');
+   txt.textContent=(j.status||'pending').toUpperCase();
+   if(j.online){pill.classList.add('on');burst();return}
+  }}catch(e){}
+ setTimeout(poll,4000)}
+function burst(){const c=document.getElementById('fx');const x=c.getContext('2d');
+ c.width=innerWidth;c.height=innerHeight;const bits=Array.from({length:90},()=>({x:innerWidth/2,y:innerHeight*0.3,
+  vx:(Math.random()-.5)*11,vy:Math.random()*-11-2,r:Math.random()*3+1,a:1,
+  c:['#2fe08b','#39a9f0','#9fe0ff','#ffffff'][Math.floor(Math.random()*4)]}));
+ let t=0;(function loop(){t++;x.clearRect(0,0,c.width,c.height);
+  bits.forEach(b=>{b.x+=b.vx;b.y+=b.vy;b.vy+=.32;b.a-=.011;x.globalAlpha=Math.max(0,b.a);
+  x.fillStyle=b.c;x.beginPath();x.arc(b.x,b.y,b.r,0,7);x.fill()});
+  if(t<130)requestAnimationFrame(loop);else x.clearRect(0,0,c.width,c.height)})()}
+poll();
+</script></body></html>"""
+
+
+
 @app.route('/nodes/edit', methods=['POST'])
 @admin_required
 def edit_node():
@@ -13146,7 +13449,22 @@ def _create_vps_for_user(user, data):
         else:
             node = conn.execute("SELECT * FROM nodes WHERE status='online' ORDER BY is_local DESC LIMIT 1").fetchone()
         if not node or node["status"] != "online":
-            raise RuntimeError("No online node is available")
+            # Self-heal a fresh/reset database: mark the local node online and
+            # retry before refusing the request.
+            try:
+                conn.execute("UPDATE nodes SET status='online' WHERE is_local=1")
+            except Exception:
+                pass
+            if not node:
+                node = conn.execute(
+                    "SELECT * FROM nodes WHERE is_local=1 ORDER BY id LIMIT 1"
+                ).fetchone()
+            elif str(node["status"] or "").lower() != "online":
+                node = conn.execute("SELECT * FROM nodes WHERE id=?", (node["id"],)).fetchone()
+        if not node:
+            raise RuntimeError("No node is configured. Add a node in Admin -> Nodes first.")
+        if str(node["status"] or "").lower() != "online":
+            raise RuntimeError(f"Node '{node['name']}' is offline; start its node agent and retry.")
         _omega_check_node_ram_capacity(conn, node, ram_mb, server_type)
 
         name = generate_container_name()
@@ -13995,7 +14313,7 @@ def omega_integrations_settings():
         fields = ["smtp_host", "smtp_username", "smtp_from", "email_html_template", "email_subject_template",
                   "google_client_id", "google_redirect_uri", "discord_client_id", "discord_redirect_uri",
                   "turnstile_site_key", "font_family", "google_font_url", "bot_prefix", "panel_public_url",
-                  "bot_banner_url", "bot_logo_url", "health_alert_discord_id"]
+                  "bot_banner_url", "bot_logo_url", "health_alert_discord_id", "bot_owner_id"]
         values = {k: (request.form.get(k) or "").strip() for k in fields}
         secret_fields = ["smtp_password", "google_client_secret", "discord_client_secret", "turnstile_secret_key", "discord_bot_token"]
         for k in secret_fields:
@@ -14052,7 +14370,7 @@ OMEGA_INTEGRATIONS_HTML = r'''<!doctype html><html lang="en"><head><meta charset
 <label>Custom HTML email body</label><textarea name="email_html_template" spellcheck="false" placeholder="HTML body. Variables: username, message, otp, vps_name, vps_username, vps_password, os_type, ram, cpu, disk, panel_link">{{settings.email_html_template}}</textarea><p class="hint">Use Jinja variables such as {{ '{{' }} vps_name {{ '}}' }} and {{ '{{' }} vps_password {{ '}}' }}. Treat this as trusted admin-authored HTML.</p></section>
 <section class="card"><h2>OAuth login</h2><div class="grid"><div><h3>Google</h3><label>Client ID</label><input name="google_client_id" value="{{settings.google_client_id}}"><label>Client Secret (blank = unchanged)</label><input type="password" name="google_client_secret"><label>Redirect URI</label><input name="google_redirect_uri" value="{{settings.google_redirect_uri}}"><p class="hint">Callback: https://YOUR-DOMAIN/auth/google/callback</p></div><div><h3>Discord</h3><label>Client ID</label><input name="discord_client_id" value="{{settings.discord_client_id}}"><label>Client Secret (blank = unchanged)</label><input type="password" name="discord_client_secret"><label>Redirect URI</label><input name="discord_redirect_uri" value="{{settings.discord_redirect_uri}}"><p class="hint">Callback: https://YOUR-DOMAIN/auth/discord/callback</p></div></div></section>
 <section class="card"><h2>Cloudflare Turnstile</h2><label>Site Key</label><input name="turnstile_site_key" value="{{settings.turnstile_site_key}}"><label>Secret Key (blank = unchanged)</label><input type="password" name="turnstile_secret_key"></section>
-<section class="card"><h2>Discord bot (runs inside app.py)</h2><label>Bot Token (blank = unchanged)</label><input type="password" name="discord_bot_token"><label>Command Prefix</label><input name="bot_prefix" maxlength="5" value="{{settings.bot_prefix or '!'}}"><label class="check"><input type="checkbox" name="sshx_enabled" {% if settings.sshx_enabled %}checked{% endif %}> Enable SSHX button</label><label class="check"><input type="checkbox" name="web_terminal_enabled" {% if settings.web_terminal_enabled %}checked{% endif %}> Enable Web Terminal button</label><label>Public panel URL</label><input name="panel_public_url" value="{{settings.panel_public_url}}" placeholder="https://panel.example.com"><label>Bot banner URL (HTTPS)</label><input name="bot_banner_url" value="{{settings.bot_banner_url}}"><label>Or upload bot banner</label><input type="file" name="bot_banner_file" accept="image/png,image/jpeg,image/gif,image/webp"><label>Bot logo URL (HTTPS)</label><input name="bot_logo_url" value="{{settings.bot_logo_url}}"><label>Or upload bot logo</label><input type="file" name="bot_logo_file" accept="image/png,image/jpeg,image/gif,image/webp"><label>Discord ID for health alerts (optional)</label><input name="health_alert_discord_id" value="{{settings.health_alert_discord_id}}"></section>
+<section class="card"><h2>Discord bot (runs inside app.py)</h2><label>Bot Token (blank = unchanged)</label><input type="password" name="discord_bot_token"><label>Bot owner Discord ID (full admin access)</label><input name="bot_owner_id" value="{{settings.bot_owner_id}}" placeholder="e.g. 123456789012345678" inputmode="numeric"><p class="hint">The owner id is added to the bot admin check next to MAIN_ADMIN_ID and bot_admins.json.</p><label>Command Prefix</label><input name="bot_prefix" maxlength="5" value="{{settings.bot_prefix or '!'}}"><label class="check"><input type="checkbox" name="sshx_enabled" {% if settings.sshx_enabled %}checked{% endif %}> Enable SSHX button</label><label class="check"><input type="checkbox" name="web_terminal_enabled" {% if settings.web_terminal_enabled %}checked{% endif %}> Enable Web Terminal button</label><label>Public panel URL</label><input name="panel_public_url" value="{{settings.panel_public_url}}" placeholder="https://panel.example.com"><label>Bot banner URL (HTTPS)</label><input name="bot_banner_url" value="{{settings.bot_banner_url}}"><label>Or upload bot banner</label><input type="file" name="bot_banner_file" accept="image/png,image/jpeg,image/gif,image/webp"><label>Bot logo URL (HTTPS)</label><input name="bot_logo_url" value="{{settings.bot_logo_url}}"><label>Or upload bot logo</label><input type="file" name="bot_logo_file" accept="image/png,image/jpeg,image/gif,image/webp"><label>Discord ID for health alerts (optional)</label><input name="health_alert_discord_id" value="{{settings.health_alert_discord_id}}"></section>
 <section class="card"><h2>Branding</h2><label>CSS font-family</label><input name="font_family" value="{{settings.font_family}}" placeholder="Inter, sans-serif"><label>Google Fonts CSS URL (optional, HTTPS fonts.googleapis.com only)</label><input name="google_font_url" value="{{settings.google_font_url}}" placeholder="https://fonts.googleapis.com/css2?family=Inter:wght@400;600"><p class="hint">Footer credit is set to Created by FLOATIX.</p></section>
 <section class="card"><h2>Node health monitoring</h2><label>Check interval in seconds (30–86400)</label><input type="number" name="health_interval_seconds" min="30" max="86400" value="{{settings.health_interval_seconds or 86400}}"><p class="hint">The background worker checks the local Incus/LXD socket and every configured remote node, stores history in SQLite and updates node status.</p><a href="/admin/health" style="color:#6ccfff">Open health dashboard →</a></section>
 <button type="submit">Save all integration settings</button></form><p><a href="/settings" style="color:#6ccfff">← Back to Panel Settings</a></p></main></body></html>'''
@@ -15392,8 +15710,11 @@ async def _omega_bot_start_async(token):
         async def predicate(interaction: discord.Interaction):
             user_id = str(interaction.user.id)
             main_admin_id = str(os.getenv("MAIN_ADMIN_ID", "")).strip()
+            owner_id = str(_omega_settings_dict().get("bot_owner_id") or "").strip()
             admins = await asyncio.to_thread(load_bot_admins)
             if (main_admin_id.isdigit() and user_id == main_admin_id) or user_id in admins:
+                return True
+            if owner_id.isdigit() and user_id == owner_id:
                 return True
 
             message = "❌ Access Denied. You are not a bot admin."
@@ -15893,6 +16214,36 @@ async def _omega_bot_start_async(token):
         except Exception as exc:
             app.logger.exception("Discord prefix command failed: %s", command)
             await reply(f"Command failed: `{str(exc)[:300]}`")
+
+    # Full command pack: VPS, invite/boost, admin, main-admin, ports and system
+    # commands, slash + prefix. Registered before the first tree sync.
+    try:
+        from core.bot_commands import register_bot_commands as _register_bot_pack
+        _register_bot_pack(
+            client=client, tree=tree, discord=discord, app_commands=app_commands,
+            helpers={
+                "get_db": get_db,
+                "get_settings": get_settings,
+                "add_log": add_log,
+                "log_activity": log_activity,
+                "create_vps_for_user": _create_vps_for_user,
+                "get_node_for_vps": get_node_for_vps,
+                "lxc_start": lxc_start,
+                "lxc_stop": lxc_stop,
+                "lxc_restart": lxc_restart,
+                "lxc_destroy": lxc_destroy,
+                "lxc_attach": lxc_attach,
+                "call_node_api": call_node_api,
+                "panel_url": lambda: str(_omega_settings_dict().get("panel_public_url") or ""),
+                "load_bot_admins": load_bot_admins,
+                "save_bot_admins": save_bot_admins,
+                "bot_uptime": lambda: time.time() - OMEGA_PROCESS_STARTED_AT,
+                "prefix_enabled": lambda: bool(OMEGA_BOT_PREFIX_ENABLED),
+                "logger": app.logger,
+            },
+        )
+    except Exception:
+        app.logger.exception("Discord command pack could not be registered")
 
     @tree.command(name="uptime", description="Create a live node status message in a channel")
     @app_commands.describe(

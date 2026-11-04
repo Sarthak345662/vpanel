@@ -28,7 +28,9 @@ A clean-source rebuild of the uploaded Vizion Panel V3 Incus package. V4 keeps t
 ## One line install (no clone)
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/minecraft015662-svg/ska-sir-ne-kam-diya-ha/main/omega.sh)
+curl -fsSL https://raw.githubusercontent.com/Sarthak345662/vpanel/main/install.sh | sudo bash
+# interactive menu, or:
+curl -fsSL https://raw.githubusercontent.com/Sarthak345662/vpanel/main/install.sh | sudo bash -s -- --install
 ```
 
 The script downloads the repository into a temporary directory and shows the same menu;
@@ -46,15 +48,18 @@ sudo bash omega.sh
 
 ```
   1) Install panel
-  2) Uninstall panel
-  3) Node install + connect
-  4) Port forwarding
+  2) Update panel
+  3) Fix / repair panel
+  4) Doctor
   5) Panel status
-  6) Update panel
-  7) Exit
+  6) Nodes (install LXC / KVM / Incus, connect by IP)
+  7) Create panel user
+  8) Port forwarding
+  9) Uninstall panel
+  0) Exit
 ```
 
-Non-interactive: `sudo bash omega.sh --install`, `--uninstall`, `--node`, `--status`, `--update`, `--port-forward`.
+Non-interactive: `--install`, `--uninstall`, `--node`, `--node-connect --panel URL --key KEY --name NAME --url URL --type lxc|kvm|incus`, `--node-install --type=...`, `--node-status`, `--create-user`, `--status`, `--update`, `--fix`, `--doctor`, `--port-forward`.
 
 Direct install on a supported systemd host as root:
 
@@ -134,10 +139,39 @@ default brand is **SK Hosting**.
 
 ### Discord bot commands
 
-Slash commands: `/vps`, `/vps_action <id> <start|stop|restart>`,
-`/nesting <id> <on|off>`, `/ask <question>`, `/uptime`, `/status`, `/add_admin`.
-Prefix commands (default prefix `!`): `!help`, `!ping`, `!vps`, `!start <id>`,
-`!stop <id>`, `!restart <id>`, `!nesting <id> on|off`, `!ai <question>`.
+**Bot owner:** Admin → Settings → **Integrations** → *Discord bot* → **Bot Owner
+Discord ID**. That id, `MAIN_ADMIN_ID` and every id in `bot_admins.json` get full
+admin access; panel users flagged admin and linked with their Discord id also pass
+the panel-level checks.
+
+**General** `/ping` `/uptime` `/plans` `/freeplans` `/stats` `/claimfree` `/myvps`
+`/list` `/manage` `/mangage` `/share-user` `/share-ruser` `/manage-shared`
+
+**VPS** `/vpsinfo` `/vps-stats` `/restart-vps` `/renew-vps` `/clone-vps`
+`/snapshot` `/restore-backup`
+
+**Invite & boost** `/addinv` `/removeinv` `/addboost` `/removeboost` `/user-stats`
+`/invite-logs` `/boost-logs`
+
+**Admin** `/create` `/delete-vps` `/add-resources` `/resize-vps` `/suspend-vps`
+`/unsuspend-vps` `/suspension-logs` `/whitelist-vps` `/userinfo` `/list-all`
+`/serverstats` `/stop-vps-all` `/migrate-vps` `/vps-network` `/apply-permissions`
+`/fix-internet` `/lxc-list`
+
+**Main admin & protection** `/admin-add` `/admin-remove` `/admin-list` `/purge-prot`
+`/purge-remove-prot` `/purge-list-protected` `/purge-vm-all` `/confirm-purge-all`
+`/purge-data` `/confirm-purge` `/exec`
+
+**Ports** `/ports` `/ports add` `/ports list` `/ports remove` `/ports-add-user`
+`/ports-remove-user` `/ports-revoke`
+
+**System** `/set-status` `/change-mode` `/maintenance` `/thresholds`
+`/set-threshold` `/check-resources` `/machine-status` `/help` `/commands`
+
+Every command also works as a prefix command with the configured prefix
+(`!ping`, `!myvps`, `!create 2 pro`, `!exec 4 uptime`, …). The original
+`/vps`, `/vps_action`, `/nesting`, `/ask`, `/uptime`, `/status`, `/add_admin`
+commands remain.
 
 Prefix commands need the privileged **Message Content Intent** in the Discord
 Developer Portal. If it is disabled the bot logs a warning, retries without the
@@ -145,27 +179,57 @@ intent and keeps answering slash commands. Set `OMEGA_BOT_PREFIX_COMMANDS=0` to
 disable prefix commands explicitly. `discord.py` is now part of
 `requirements.txt`, so `setup.sh` installs it.
 
-### Connect a node by command
+### Add a node by name + IP (panel)
 
-Admin → **Node Install / Uninstall** shows the
-enrollment key and the exact command. On the node server run:
+1. Admin → **Nodes** → **Add Remote Node**.
+2. Enter the **node name**, the **VPS IP**, and the **VPS type**
+   (LXC / KVM / Incus). The agent does **not** have to be installed yet.
+3. The panel registers the node as `pending` and opens the connect page with the
+   exact one-line command and copy button:
 
 ```bash
-sudo bash scripts/omega-node-install.sh --bind=0.0.0.0   # remote panel must reach the agent
-sudo bash scripts/omega-node-connect.sh \
-  --panel http://PANEL_IP:5000 \
-  --key ENROLLMENT_KEY \
-  --name node-2 \
-  --url http://NODE_IP:5001
+curl -fsSL https://raw.githubusercontent.com/Sarthak345662/vpanel/main/omega.sh \
+  | sudo bash -s -- --node-connect \
+      --panel http://PANEL_IP:5000 --key ENROLLMENT_KEY \
+      --name node-2 --url http://NODE_IP:5001 --type kvm
+```
 
-# allow the agent port only from the panel
+4. Paste it on the new VPS. The page animates through the steps and turns green
+   automatically (it polls `/nodes/status/<id>`) as soon as the agent answers.
+
+Manual equivalent:
+
+```bash
+sudo bash scripts/omega-node-install.sh --type=kvm --bind=0.0.0.0
+sudo bash scripts/omega-node-connect.sh --panel http://PANEL_IP:5000 \
+  --key ENROLLMENT_KEY --name node-2 --url http://NODE_IP:5001
 sudo ufw allow from PANEL_IP to any port 5001 proto tcp
 ```
 
-Or run `sudo bash omega.sh` on the node and choose **3) Node install + connect**.
-The panel stores the node with `is_local=0`, its agent URL and its token, so it can
-create and manage VPS on that node immediately. Re-running the same command rotates
-the stored token.
+The panel stores the node with `is_local=0`, its agent URL, its type and its
+token, so it can create and manage VPS on that node immediately.
+
+### LXC / KVM / Incus are three different installs
+
+A node is not a single thing: pick the stack you actually want. Each type runs a
+different package set; nothing is ever purged.
+
+| `--type` | Installs | Use it for |
+| --- | --- | --- |
+| `lxc` | plain LXC userland + Incus container backend, lxcfs | cheap system containers, no QEMU/libvirt |
+| `kvm` | QEMU/KVM, libvirt, virtinst, cpu-checker; verifies `/dev/kvm` | hardware-accelerated virtual machines |
+| `incus` | Incus containers **and** QEMU virtual machines | mixed fleet on one node |
+| `none` | agent only | stack already installed |
+
+```bash
+sudo bash omega.sh --node-install --type=lxc
+sudo bash omega.sh --node-install --type=kvm
+sudo bash omega.sh --node-install --type=incus
+sudo bash omega.sh --node-status            # incus / qemu / lxc / /dev/kvm report
+```
+
+The interactive path is **sudo bash omega.sh → 6) Nodes** which offers all three
+types plus *Connect an installed node to a panel*.
 
 ### Node install / uninstall commands
 
@@ -173,11 +237,21 @@ Admin → **Node Install / Uninstall** runs the agent scripts on this host, and 
 same commands work from a terminal:
 
 ```bash
-sudo bash scripts/omega-node-install.sh          # install / repair the node agent
-sudo bash scripts/omega-node-install.sh --check  # service + health status
-sudo bash scripts/omega-node-uninstall.sh        # stop, disable, remove the unit
+sudo bash scripts/omega-node-install.sh --type=kvm  # install stack + agent
+sudo bash scripts/omega-node-install.sh --check     # stack, service, health
+sudo bash scripts/omega-node-uninstall.sh           # stop, disable, remove the unit
 sudo bash scripts/omega-node-uninstall.sh --purge
 ```
+
+### Panel users from the CLI
+
+```bash
+sudo bash omega.sh --create-user      # prompts for name/email/password/quota/admin
+sudo bash omega.sh                    # menu -> 7) Create panel user
+```
+
+The command creates the login in the panel database, prints the user id and (when
+the column exists) a `omega_bot_…` API token for `/api/bot/*` and Discord linking.
 
 The uninstaller never deletes the shared panel directory in `/opt/omega-panel`.
 

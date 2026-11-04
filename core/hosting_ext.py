@@ -333,8 +333,10 @@ ADMIN_NODE_TOOLS_BODY = """
       <button class="x-btn x-danger" name="action" value="uninstall" type="submit">Uninstall node</button>
     </form>
     <p class="x-note" style="margin-top:12px">Equivalent terminal commands:</p>
-    <pre class="x-pre">sudo bash scripts/omega-node-install.sh
-sudo bash scripts/omega-node-install.sh --check
+    <pre class="x-pre">sudo bash scripts/omega-node-install.sh --type=lxc    # containers only
+sudo bash scripts/omega-node-install.sh --type=kvm    # QEMU/KVM + libvirt
+sudo bash scripts/omega-node-install.sh --type=incus  # containers + VMs
+sudo bash scripts/omega-node-install.sh --check       # stack + agent status
 sudo bash scripts/omega-node-uninstall.sh
 sudo bash scripts/omega-node-uninstall.sh --purge</pre>
   </div>
@@ -343,10 +345,10 @@ sudo bash scripts/omega-node-uninstall.sh --purge</pre>
   <h2>Connect a node by command</h2>
   <div class="x-row"><span>Enrollment key</span><span><code>{{ enroll_key or 'not generated yet' }}</code></span></div>
   <div class="x-row"><span>Panel URL</span><span>{{ panel_url }}</span></div>
-  <p class="x-note">Run these on the node server (the second command connects it to this panel):</p>
-  <pre class="x-pre">sudo bash scripts/omega-node-install.sh
+  <p class="x-note">The easiest path is Admin &rarr; Nodes &rarr; Add Node: enter a name and the VPS IP, pick LXC / KVM / Incus and copy the generated one-line command. Manual equivalent:</p>
+  <pre class="x-pre">sudo bash scripts/omega-node-install.sh --type=lxc --bind=0.0.0.0
 sudo bash scripts/omega-node-connect.sh --panel {{ panel_url }} --key {{ enroll_key }} --name NODE-NAME --url http://NODE_IP:5001</pre>
-  <p class="x-note">Or on the node run <code>sudo bash omega.sh</code> and choose option 3 (Node install + connect).</p>
+  <p class="x-note">Or on the node run <code>sudo bash omega.sh</code> and choose option 6 (Nodes) &rarr; 4 (Connect an installed node).</p>
 </div>
 {% if output %}
 <div class="x-card">
