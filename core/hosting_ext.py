@@ -292,7 +292,9 @@ ADMIN_BRANDING_BODY = """
       <img class="x-bg-preview" src="{{ settings['background_path'] }}" alt="Current background">
     {% endif %}
     <form method="post" action="{{ url_for('ext_admin_branding') }}" enctype="multipart/form-data" style="margin-top:14px">
-      <div class="x-field"><label>Upload image (PNG, JPG, GIF or WebP, max 8 MB)</label>
+      <div class="x-field"><label>Image / GIF link (https://…)</label>
+        <input class="x-input" name="background_url" placeholder="https://example.com/background.gif"></div>
+      <div class="x-field"><label>Or upload image (PNG, JPG, GIF or WebP, max 8 MB)</label>
         <input class="x-input" type="file" name="background_file" accept="image/png,image/jpeg,image/gif,image/webp"></div>
       <div class="x-field"><label>Dark overlay: {{ settings['background_dim'] or 55 }}%</label>
         <input class="x-input" type="range" min="0" max="90" step="5" name="background_dim" value="{{ settings['background_dim'] or 55 }}"></div>
@@ -879,6 +881,15 @@ def register_hosting_extensions(app, deps) -> None:
                         (site_name, brand_name, footer_text, settings_id),
                     )
                 conn.execute("UPDATE settings SET background_dim=? WHERE id=?", (dim, settings_id))
+                background_url = (request.form.get("background_url") or "").strip()
+                if background_url:
+                    if not background_url.lower().startswith(("http://", "https://")) or len(background_url) > 500:
+                        conn.commit()
+                        flash("Background link must start with http:// or https://", "error")
+                        return redirect(url_for("ext_admin_branding"))
+                    conn.execute("UPDATE settings SET background_path=? WHERE id=?",
+                                 (background_url, settings_id))
+                    current_background = background_url
                 upload = request.files.get("background_file")
                 if upload and upload.filename:
                     data, suffix, error = _read_image(upload)
@@ -1364,11 +1375,21 @@ def register_hosting_extensions(app, deps) -> None:
             except (TypeError, ValueError):
                 dim = 0.55
             css = ""
-            if background.startswith("/static/"):
+            remote_bg = background.lower().startswith(("http://", "https://"))
+            if background.startswith("/static/") or remote_bg:
                 css += (
                     "body{background-image:linear-gradient(rgba(3,7,18,%.2f),rgba(3,7,18,%.2f)),"
                     "url('%s') !important;background-size:cover !important;background-position:center !important;"
                     "background-attachment:fixed !important;background-repeat:no-repeat !important;}"
+                    % (dim, dim, _esc(background))
+                )
+                # The sign-in page paints an opaque layer over the body, so the
+                # configured background (including a linked GIF) goes there too.
+                css += (
+                    ".auth-bg{background-image:linear-gradient(rgba(3,7,18,%.2f),rgba(3,7,18,%.2f)),"
+                    "url('%s') !important;background-size:cover !important;"
+                    "background-position:center !important;background-repeat:no-repeat !important;}"
+                    ".auth-grid{opacity:.25 !important;}"
                     % (dim, dim, _esc(background))
                 )
             widget = ""

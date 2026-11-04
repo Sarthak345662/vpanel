@@ -199,6 +199,88 @@ def lxc_set_root_password(name, password, timeout=180):
     fallback_code, fallback_output = lxc_attach(name, fallback, timeout=60)
     return fallback_code == 0, fallback_output or output
 
+def _panel_public_host():
+    """Host clients should use to reach this node; never a loopback address."""
+    candidates = []
+    try:
+        settings = get_settings()
+        if settings is not None:
+            for key in ("public_ipv4", "panel_public_url"):
+                if key in settings.keys():
+                    candidates.append(str(settings[key] or "").strip())
+    except Exception:
+        pass
+    try:
+        candidates.append((request.host or "").split(":")[0])
+    except Exception:
+        pass
+    for value in candidates:
+        if not value:
+            continue
+        if value.startswith("http://") or value.startswith("https://"):
+            from urllib.parse import urlparse
+            value = urlparse(value).hostname or ""
+        value = value.strip().strip("/")
+        if value and value not in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
+            return value
+    try:
+        return _socket.gethostbyname(_socket.gethostname())
+    except Exception:
+        return ""
+
+def _free_tcp_port(start=22000, end=22999):
+    used = set()
+    try:
+        conn = get_db()
+        try:
+            for row in conn.execute("SELECT ssh_port FROM vps WHERE COALESCE(ssh_port,'') != ''"):
+                try:
+                    used.add(int(str(row["ssh_port"]).strip()))
+                except (TypeError, ValueError):
+                    pass
+        finally:
+            conn.close()
+    except Exception:
+        pass
+    for port in range(start, end + 1):
+        if port in used:
+            continue
+        probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            probe.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            probe.bind(("0.0.0.0", port))
+            return port
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    return 0
+
+def _ensure_lxc_ssh_access(name):
+    """Expose the container's sshd on a free host port through Incus."""
+    lxc_enable_ssh(name)
+    host = _panel_public_host()
+    port = _free_tcp_port()
+    if not port:
+        app.logger.warning("No free host port for SSH on %s", name)
+        return host, 0
+    device = "ssh-%d" % port
+    try:
+        import subprocess as _sp
+        _sp.run(["incus", "config", "device", "remove", name, device],
+                capture_output=True, timeout=30)
+        added = _sp.run(["incus", "config", "device", "add", name, device, "proxy",
+                         "listen=tcp:0.0.0.0:%d" % port, "connect=tcp:127.0.0.1:22"],
+                        capture_output=True, text=True, timeout=60)
+        if added.returncode != 0:
+            app.logger.warning("SSH proxy device failed for %s: %s", name,
+                               (added.stderr or "").strip()[:300])
+            return "", 0
+    except Exception:
+        app.logger.exception("Could not expose SSH for %s", name)
+        return "", 0
+    return host, port
+
 def lxc_enable_ssh(name, timeout=240):
     """Best effort: make sure sshd exists and accepts root logins."""
     script = ("if ! command -v sshd >/dev/null 2>&1; then "
@@ -2954,6 +3036,9 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                             <div class="ssh-box">
                                 <code>{{ vps['ssh_command'] }}</code>
                             </div>
+                            <form method="POST" action="{{ url_for('fix_vps_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
+                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Fix SSH access (public IP + port)</button>
+                            </form>
                             <p class="text-dim" style="font-size:12px;margin-bottom:6px;margin-top:6px;">Password: <strong>{{ vps['ssh_password'] }}</strong></p>
                             {% else %}
                             <p class="text-dim" style="font-size:12px;margin-bottom:10px;">Open this link to connect:</p>
@@ -9726,6 +9811,20 @@ def migrate_nodes():
     # A fresh install must always have one online local node; without it every
     # VPS creation used to fail with "No online node is available".
     try:
+        _public = (os.environ.get("OMEGA_PUBLIC_HOST") or "").strip()
+        if not _public:
+            _row = conn.execute("SELECT public_ipv4 FROM settings LIMIT 1").fetchone()
+            _public = str(_row["public_ipv4"] or "").strip() if _row and "public_ipv4" in _row.keys() else ""
+        if _public:
+            for _loop in ("127.0.0.1", "localhost"):
+                conn.execute(
+                    "UPDATE vps SET ssh_command = REPLACE(ssh_command, ?, ?)"
+                    " WHERE ssh_command LIKE ?",
+                    ("root@" + _loop, "root@" + _public, "ssh root@" + _loop + "%"),
+                )
+    except Exception:
+        app.logger.exception("Could not rewrite loopback SSH commands")
+    try:
         local = conn.execute("SELECT id FROM nodes WHERE is_local = 1 ORDER BY id LIMIT 1").fetchone()
         if local:
             conn.execute("UPDATE nodes SET status = 'online' WHERE id = ?", (local["id"],))
@@ -13612,13 +13711,20 @@ def _create_vps_for_user(user, data):
         ssh_link = ""
         if node["is_local"] and vps_type == "nonkvm":
             password = instance_info.get("ssh_password") or password
-            ssh_host = instance_info.get("ssh_host") or "127.0.0.1"
+            ssh_host = str(instance_info.get("ssh_host") or "").strip()
+            if not ssh_host or ssh_host in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
+                ssh_host = _panel_public_host() or ssh_host or "127.0.0.1"
             ssh_port = instance_info.get("ssh_port") or ""
             ssh_link = f"ssh root@{ssh_host}" + (f" -p {ssh_port}" if ssh_port else "")
         elif node["is_local"]:
             password_ok, password_output = lxc_set_root_password(container_id, password)
             if password_ok:
-                lxc_enable_ssh(container_id)
+                try:
+                    ssh_host, ssh_port = _ensure_lxc_ssh_access(container_id)
+                    if ssh_host:
+                        ssh_link = f"ssh root@{ssh_host}" + (f" -p {ssh_port}" if ssh_port else "")
+                except Exception:
+                    app.logger.exception("Could not expose SSH for %s", container_id)
             else:
                 app.logger.warning("Root password provisioning failed on %s: %r", container_id, password_output)
                 if vps_type == "kvm":
@@ -13723,7 +13829,9 @@ def _provision_existing_panel_vps(user, vps_id, container_id, container_name, no
     if node["is_local"]:
         password_ok, _output = lxc_set_root_password(container_id, password)
         if password_ok:
-            lxc_enable_ssh(container_id)
+            ssh_host, ssh_port = _ensure_lxc_ssh_access(container_id)
+            if ssh_host:
+                ssh_link = f"ssh root@{ssh_host}" + (f" -p {ssh_port}" if ssh_port else "")
         else:
             raise RuntimeError("VPS created, but root password provisioning failed")
     else:
@@ -14004,9 +14112,11 @@ def admin_bot_settings():
                     try: os.remove(old_path)
                     except OSError: pass
             banner_path = f"/static/uploads/{filename}"
+        owner_id = "".join(ch for ch in str(request.form.get("bot_owner_id") or "") if ch.isdigit())[:32]
         conn.execute(
-            "UPDATE settings SET bot_prefix=?,sshx_enabled=?,web_terminal_enabled=?,banner_path=? WHERE id=?",
-            (prefix, sshx_enabled, terminal_enabled, banner_path, settings["id"])
+            "UPDATE settings SET bot_prefix=?,sshx_enabled=?,web_terminal_enabled=?,banner_path=?,"
+            "bot_owner_id=COALESCE(NULLIF(?,''),bot_owner_id) WHERE id=?",
+            (prefix, sshx_enabled, terminal_enabled, banner_path, owner_id, settings["id"])
         )
         conn.commit()
         conn.close()
@@ -14040,6 +14150,7 @@ EMBEDDED_TEMPLATES["bot_settings.html"] = """<!doctype html><html lang="en"><hea
 <h1>Bot Settings</h1><p>Configure the companion bot and panel banner.</p>
 <form method="post" enctype="multipart/form-data">
 <label>Discord Bot Prefix</label><input class="form-control" name="bot_prefix" value="{{ settings['bot_prefix'] or '!' }}" maxlength="5" required>
+<label style="display:block;margin-top:14px">Bot owner Discord ID (full admin access)</label><input class="form-control" name="bot_owner_id" value="{{ settings['bot_owner_id'] or '' }}" inputmode="numeric" placeholder="e.g. 123456789012345678">
 <label style="display:block;margin-top:14px"><input type="checkbox" name="sshx_enabled" {% if settings['sshx_enabled'] %}checked{% endif %}> Enable SSHX integration</label>
 <label style="display:block;margin-top:10px"><input type="checkbox" name="web_terminal_enabled" {% if settings['web_terminal_enabled'] %}checked{% endif %}> Enable Web Terminal</label>
 <label style="display:block;margin-top:14px">Panel background/banner (PNG/JPG/GIF/WebP, max 5 MB)</label><input class="form-control" type="file" name="banner_file" accept="image/png,image/jpeg,image/gif,image/webp">
@@ -15707,6 +15818,56 @@ def _omega_bot_reinstall_vps(vps_id, selected_alias):
     return new_container_id
 
 
+
+
+@app.route("/vps/<int:vps_id>/fix-ssh", methods=["POST"])
+@login_required
+def fix_vps_ssh(vps_id):
+    vps_row, node = get_node_for_vps(vps_id)
+    if not vps_row:
+        flash("VPS was not found.", "error")
+        return redirect(url_for("dashboard"))
+    if str(session.get("user_id")) != str(vps_row["user_id"]) and not session.get("is_admin"):
+        flash("You cannot change this VPS.", "error")
+        return redirect(url_for("dashboard"))
+    if not node:
+        flash("No node is attached to this VPS.", "error")
+        return redirect(url_for("vps_detail", vps_id=vps_id))
+    if not vps_row["container_id"]:
+        flash("This VPS has no container yet.", "error")
+        return redirect(url_for("vps_detail", vps_id=vps_id))
+    password = vps_row["ssh_password"] or secrets.token_urlsafe(16)
+    if node["is_local"]:
+        ok, _output = lxc_set_root_password(vps_row["container_id"], password)
+        if not ok:
+            flash("Could not set the root password inside the VPS. Start it and retry.", "error")
+            return redirect(url_for("vps_detail", vps_id=vps_id))
+        host, port = _ensure_lxc_ssh_access(vps_row["container_id"])
+        if not host or not port:
+            flash("Could not open an SSH port on this node.", "error")
+            return redirect(url_for("vps_detail", vps_id=vps_id))
+        command = f"ssh root@{host} -p {port}"
+    else:
+        result, code = call_node_api(
+            node["node_url"], node["api_key"],
+            f"/api/container/{vps_row['container_id']}/regen-ssh",
+            method="POST", data={"method": "sshx"}, timeout=90,
+        )
+        command = (result or {}).get("ssh_command") or ""
+        password = (result or {}).get("password") or password
+        if code not in (200, 201, 202) or not command:
+            flash("The node could not prepare SSH access for this VPS.", "error")
+            return redirect(url_for("vps_detail", vps_id=vps_id))
+    conn = get_db()
+    try:
+        conn.execute("UPDATE vps SET ssh_command=?, ssh_password=? WHERE id=?",
+                     (command, password, vps_id))
+        conn.commit()
+    finally:
+        conn.close()
+    add_log("info", f"SSH access refreshed for {vps_row['container_name']}: {command}", "vps")
+    flash("SSH access updated.", "success")
+    return redirect(url_for("vps_detail", vps_id=vps_id))
 
 
 def _omega_bot_ensure_sshx(vps_id):
