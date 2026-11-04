@@ -31,3 +31,19 @@
 @keyframes oco-pop{0%{transform:scale(.5)}60%{transform:scale(1.35)}100%{transform:scale(1)}}
 @keyframes oco-fall{0%{transform:translateY(-10px) rotate(0);opacity:1}100%{transform:translateY(46vh) rotate(420deg);opacity:0}}
 @media (prefers-reduced-motion: reduce){#omega-create-overlay *,.oco-confetti{animation:none!important}}
+
+/* start / stop / restart / SSH action overlay */
+.omega-action-overlay{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;
+  background:rgba(5,9,18,.72);backdrop-filter:blur(4px);opacity:0;pointer-events:none;transition:opacity .25s ease}
+.omega-action-overlay.show{opacity:1;pointer-events:auto}
+.omega-action-overlay .oao-card{min-width:260px;padding:26px 28px;border-radius:16px;text-align:center;
+  background:rgba(12,20,34,.95);border:1px solid rgba(34,211,238,.25);color:#e6f1ff;
+  box-shadow:0 18px 50px rgba(0,0,0,.5)}
+.omega-action-overlay h4{margin:14px 0 5px;font-size:16px;font-weight:600}
+.omega-action-overlay p{margin:0;font-size:12px;color:#8fb4d9}
+.omega-action-overlay .oao-dots{display:flex;gap:7px;justify-content:center}
+.omega-action-overlay .oao-dots i{width:9px;height:9px;border-radius:50%;background:#22d3ee;
+  animation:oao-bounce .9s ease-in-out infinite}
+.omega-action-overlay .oao-dots i:nth-child(2){animation-delay:.15s;background:#a78bfa}
+.omega-action-overlay .oao-dots i:nth-child(3){animation-delay:.3s;background:#34d399}
+@keyframes oao-bounce{0%,100%{transform:translateY(0);opacity:.55}50%{transform:translateY(-7px);opacity:1}}

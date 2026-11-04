@@ -256,30 +256,68 @@ def _free_tcp_port(start=22000, end=22999):
             probe.close()
     return 0
 
+def _container_ipv4(name):
+    code, resp = _lxd_request('GET', f"/1.0/instances/{name}/state")
+    if code != 200 or not isinstance(resp, dict):
+        return ""
+    interfaces = (resp.get("metadata") or {}).get("network") or {}
+    for iface in interfaces.values():
+        for addr in (iface or {}).get("addresses") or []:
+            if addr.get("family") == "inet" and addr.get("scope") == "global":
+                return str(addr.get("address") or "")
+    return ""
+
+def _port_open(host, port, timeout=1.5):
+    try:
+        probe = _socket.create_connection((host, int(port)), timeout=timeout)
+        probe.close()
+        return True
+    except OSError:
+        return False
+
+def _lxc_add_proxy_device(name, port):
+    """Attach a proxy device through the Incus REST API (no CLI needed)."""
+    code, resp = _lxd_request('GET', f"/1.0/instances/{name}")
+    if code != 200 or not isinstance(resp, dict):
+        return False
+    devices = dict((resp.get("metadata") or {}).get("devices") or {})
+    devices["ssh-%d" % port] = {
+        "type": "proxy",
+        "listen": "tcp:0.0.0.0:%d" % port,
+        "connect": "tcp:127.0.0.1:22",
+    }
+    code, _resp = _lxd_request('PATCH', f"/1.0/instances/{name}", data={"devices": devices})
+    return code in (200, 202)
+
 def _ensure_lxc_ssh_access(name):
-    """Expose the container's sshd on a free host port through Incus."""
+    """Expose the container's sshd on a host port that really accepts TCP."""
     lxc_enable_ssh(name)
     host = _panel_public_host()
     port = _free_tcp_port()
     if not port:
         app.logger.warning("No free host port for SSH on %s", name)
         return host, 0
-    device = "ssh-%d" % port
-    try:
-        import subprocess as _sp
-        _sp.run(["incus", "config", "device", "remove", name, device],
-                capture_output=True, timeout=30)
-        added = _sp.run(["incus", "config", "device", "add", name, device, "proxy",
-                         "listen=tcp:0.0.0.0:%d" % port, "connect=tcp:127.0.0.1:22"],
-                        capture_output=True, text=True, timeout=60)
-        if added.returncode != 0:
-            app.logger.warning("SSH proxy device failed for %s: %s", name,
-                               (added.stderr or "").strip()[:300])
-            return "", 0
-    except Exception:
-        app.logger.exception("Could not expose SSH for %s", name)
-        return "", 0
-    return host, port
+    if _lxc_add_proxy_device(name, port):
+        for _ in range(8):
+            if _port_open("127.0.0.1", port):
+                return host, port
+            time.sleep(0.5)
+        app.logger.warning("Proxy device for %s did not answer on port %s", name, port)
+    # The daemon may not allow proxy devices: forward to the container instead.
+    container_ip = _container_ipv4(name)
+    if container_ip and not _port_open("127.0.0.1", port):
+        try:
+            import subprocess as _sp
+            _sp.Popen(["socat", "TCP-LISTEN:%d,fork,reuseaddr" % port,
+                       "TCP:%s:22" % container_ip],
+                      stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, start_new_session=True)
+            for _ in range(8):
+                if _port_open("127.0.0.1", port):
+                    return host, port
+                time.sleep(0.5)
+        except Exception:
+            app.logger.exception("socat SSH fallback failed for %s", name)
+    return "", 0
 
 def lxc_enable_ssh(name, timeout=240):
     """Best effort: make sure sshd exists and accepts root logins."""
@@ -14123,7 +14161,18 @@ def admin_bot_settings():
         flash("Bot settings saved.", "success")
         return redirect(url_for("admin_bot_settings"))
     conn.close()
-    return render_template("bot_settings.html", settings=get_settings())
+    return render_template("bot_settings.html", settings=get_settings(), bot_status=omega_bot_status())
+
+@app.route("/admin/bot/restart", methods=["POST"])
+@login_required
+@admin_required
+def admin_bot_restart():
+    if omega_restart_bot():
+        flash("Discord bot restart requested; it reconnects in a few seconds.", "info")
+    else:
+        flash("The bot worker is not running. Start it with: sudo systemctl restart omega-bot", "error")
+    return redirect(url_for("admin_bot_settings"))
+
 
 @app.route("/admin/smtp/test", methods=["POST"])
 @login_required
@@ -14148,6 +14197,8 @@ EMBEDDED_TEMPLATES["bot_settings.html"] = """<!doctype html><html lang="en"><hea
 <title>Bot Settings - Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"></head>
 <body><main class="page" style="max-width:760px;margin:5vh auto;padding:24px">
 <h1>Bot Settings</h1><p>Configure the companion bot and panel banner.</p>
+<p><strong>Bot status:</strong> {% if bot_status.connected %}online as {{ bot_status.user }}{% elif bot_status.thread %}connecting…{% else %}offline (worker not running){% endif %}{% if bot_status.error %} · last error: <code>{{ bot_status.error }}</code>{% endif %}</p>
+<form method="post" action="{{ url_for('admin_bot_restart') }}" style="margin:10px 0 18px"><button class="btn btn-primary" type="submit">Restart bot</button></form>
 <form method="post" enctype="multipart/form-data">
 <label>Discord Bot Prefix</label><input class="form-control" name="bot_prefix" value="{{ settings['bot_prefix'] or '!' }}" maxlength="5" required>
 <label style="display:block;margin-top:14px">Bot owner Discord ID (full admin access)</label><input class="form-control" name="bot_owner_id" value="{{ settings['bot_owner_id'] or '' }}" inputmode="numeric" placeholder="e.g. 123456789012345678">
@@ -14175,6 +14226,8 @@ OMEGA_HEALTH_STOP = threading.Event()
 OMEGA_BOT_THREAD = None
 OMEGA_BOT_LOOP = None
 OMEGA_DISCORD_BOT = None
+OMEGA_BOT_CONNECTED_AS = ""
+OMEGA_BOT_LAST_ERROR = ""
 
 
 def _omega_columns():
@@ -14581,6 +14634,10 @@ def omega_integrations_settings():
         update_values = [values[k] for k in values] + [values["smtp_port"], values["smtp_tls"], values["smtp_ssl"], values["health_interval_seconds"]]
         conn = get_db(); conn.execute("UPDATE settings SET " + ",".join(f"{c}=?" for c in columns) + " WHERE id=?", update_values + [s["id"]]); conn.commit(); conn.close()
         flash("Integration settings saved to SQLite.", "success")
+        try:
+            omega_restart_bot()
+        except Exception:
+            app.logger.exception("Could not restart the Discord bot after saving settings")
         return redirect(url_for("omega_integrations_settings"))
     s = _omega_settings_dict()
     return render_template_string(OMEGA_INTEGRATIONS_HTML, settings=s)
@@ -16640,9 +16697,15 @@ async def _omega_bot_start_async(token):
         await client.wait_until_ready()
         await asyncio.to_thread(_ensure_live_schema_sync)
 
+    global OMEGA_DISCORD_BOT, OMEGA_BOT_CONNECTED_AS
+    OMEGA_DISCORD_BOT = client
+
     @client.event
     async def on_ready():
         nonlocal synced
+        global OMEGA_BOT_CONNECTED_AS, OMEGA_BOT_LAST_ERROR
+        OMEGA_BOT_CONNECTED_AS = str(client.user or "")
+        OMEGA_BOT_LAST_ERROR = ""
         app.logger.info("Admin-only live status bot connected as %s", client.user)
         if not synced:
             try:
@@ -16679,6 +16742,33 @@ async def _omega_bot_start_async(token):
         if live_status_scheduler.is_running():
             live_status_scheduler.cancel()
         await client.close()
+
+def omega_bot_status():
+    client = OMEGA_DISCORD_BOT
+    connected = bool(client is not None and not getattr(client, "is_closed", lambda: True)())
+    return {
+        "connected": connected,
+        "user": OMEGA_BOT_CONNECTED_AS if connected else "",
+        "error": OMEGA_BOT_LAST_ERROR,
+        "thread": any(t.name == "omega-discord-bot" and t.is_alive() for t in threading.enumerate()),
+    }
+
+def omega_restart_bot():
+    """Close the live Discord session so the supervisor reconnects immediately."""
+    global OMEGA_BOT_LAST_ERROR
+    client = OMEGA_DISCORD_BOT
+    loop = OMEGA_BOT_LOOP
+    thread_alive = any(t.name == "omega-discord-bot" and t.is_alive() for t in threading.enumerate())
+    if client is not None and loop is not None and not loop.is_closed():
+        try:
+            import asyncio as _aio
+            _aio.run_coroutine_threadsafe(client.close(), loop).result(timeout=12)
+        except Exception as exc:
+            OMEGA_BOT_LAST_ERROR = str(exc)[:300]
+            app.logger.warning("Could not close the Discord session: %s", exc)
+    # Never start the bot inside a gunicorn worker: omega-bot.service owns it,
+    # otherwise two clients would connect with the same token.
+    return bool(client is not None or thread_alive)
 
 def omega_discord_bot_thread():
     """Run Discord in a dedicated daemon thread with a fresh asyncio loop per session."""
@@ -16723,6 +16813,8 @@ def omega_discord_bot_thread():
                     "or set OMEGA_BOT_PREFIX_COMMANDS=0. Slash commands keep working."
                 )
             else:
+                global OMEGA_BOT_LAST_ERROR
+                OMEGA_BOT_LAST_ERROR = str(exc)[:300]
                 app.logger.exception("Discord bot session ended; supervisor will retry")
         finally:
             try:

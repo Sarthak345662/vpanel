@@ -1436,8 +1436,10 @@ def register_hosting_extensions(app, deps) -> None:
                     html = html.replace("</body>", widget + "</body>", 1)
                 else:
                     html += widget
+            anim = ('<script src="/static/js/omega.js" defer></script>'
+                    if "/static/js/omega.js" not in html else "")
             if "</body>" in html:
-                html = html.replace("</body>", "<!--omega-host-ext--></body>", 1)
+                html = html.replace("</body>", anim + "<!--omega-host-ext--></body>", 1)
             else:
                 html += "<!--omega-host-ext-->"
             response.set_data(html)
