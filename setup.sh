@@ -103,6 +103,10 @@ fi
 # Copy the clean release into a stable service path.
 mkdir -p "$INSTALL_DIR"
 if [[ "$APP_DIR" != "$INSTALL_DIR" ]]; then cp -a "$APP_DIR"/. "$INSTALL_DIR"/; fi
+# Stale bytecode copied from a checkout can shadow freshly installed modules
+# and a leftover virtualenv from another host is never reused here.
+find "$INSTALL_DIR" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+if [[ "$APP_DIR" != "$INSTALL_DIR" ]]; then rm -rf "$INSTALL_DIR/.venv" 2>/dev/null || true; fi
 chmod +x "$INSTALL_DIR"/scripts/*.sh "$INSTALL_DIR/omega.sh" 2>/dev/null || true
 
 # Service account + directories.

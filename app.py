@@ -9358,7 +9358,47 @@ app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 def make_session_permanent():
     session.permanent = True
 limiter = Limiter(app=app, key_func=get_remote_address, default_limits=[], storage_uri='memory://')
-DATABASE = 'database.db'
+def _database_has_schema(path):
+    """True when the file already looks like a panel database."""
+    try:
+        conn = sqlite3.connect(str(path), timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+            ).fetchone()
+        finally:
+            conn.close()
+        return bool(row)
+    except sqlite3.Error:
+        return False
+def _resolve_database():
+    """Return the one SQLite file the panel, core.db and the scripts share.
+
+    Older releases opened a relative database.db here while core/db.py and
+    setup.sh honoured OMEGA_DB, so an install could end up with two databases:
+    the panel then saw missing tables and columns and pages failed with
+    "Something went wrong". The configured path wins now, and an existing
+    legacy file is copied over once so no data is lost.
+    """
+    env_db = (os.environ.get('OMEGA_DB') or '').strip()
+    legacy = Path('database.db')
+    if not env_db:
+        if legacy.exists():
+            return str(legacy)
+        return str(Path(os.environ.get('OMEGA_DATA_DIR') or '.') / 'database.db')
+    target = Path(env_db)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not _database_has_schema(target) and _database_has_schema(legacy):
+            import shutil
+            if target.exists() and target.stat().st_size:
+                shutil.copy2(str(target), str(target) + '.before-upgrade')
+            shutil.copy2(str(legacy), str(target))
+            app.logger.warning('Migrated legacy database.db to %s', target)
+    except OSError:
+        pass
+    return str(target)
+DATABASE = _resolve_database()
 SERVER_LIMIT = 5
 def get_db():
     conn = sqlite3.connect(DATABASE, timeout=10)
