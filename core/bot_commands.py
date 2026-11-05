@@ -1600,6 +1600,62 @@ def register_bot_commands(*, client, tree, discord, app_commands, helpers):
             + (admin_extra if actor["admin"] else "")
         )
 
+    def help_embed(is_admin: bool):
+        """A tidy /help card grouped by what the command does."""
+        embed = discord.Embed(
+            title="⚡ Vizion Panel — command guide",
+            description=("Every command works as a slash command (`/ping`) and with the "
+                         "prefix (`!ping`). Use `/help` any time to see this card again."),
+            colour=discord.Colour.from_str("#a855f7") if hasattr(discord.Colour, "from_str") else discord.Colour.purple(),
+        )
+        embed.add_field(
+            name="🚀 General",
+            value=("`/ping` `/uptime` `/plans` `/freeplans` `/stats` `/claimfree`\n"
+                   "`/myvps` `/list` `/manage` `/share-user` `/manage-shared`"),
+            inline=False,
+        )
+        embed.add_field(
+            name="🖥️ Your VPS",
+            value=("`/vpsinfo` `/vps-stats` `/restart-vps` `/renew-vps` `/clone-vps`\n"
+                   "`/snapshot` `/restore-backup`"),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎁 Invites & boosts",
+            value=("`/addinv` `/removeinv` `/addboost` `/removeboost` `/user-stats`\n"
+                   "`/invite-logs` `/boost-logs`"),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔌 Ports",
+            value=("`/ports list` `/ports add` `/ports remove` `/ports-add-user`\n"
+                   "`/ports-remove-user` `/ports-revoke`"),
+            inline=False,
+        )
+        embed.add_field(
+            name="⚙️ System",
+            value=("`/set-status` `/change-mode` `/maintenance` `/thresholds` `/set-threshold`\n"
+                   "`/check-resources` `/machine-status` `/help`"),
+            inline=False,
+        )
+        if is_admin:
+            embed.add_field(
+                name="🛡️ Admin",
+                value=("`/create` `/delete-vps` `/add-resources` `/resize-vps` `/suspend-vps` "
+                       "`/unsuspend-vps` `/whitelist-vps` `/userinfo` `/list-all` `/serverstats` "
+                       "`/stop-vps-all` `/migrate-vps` `/vps-network` `/fix-internet` `/lxc-list`"),
+                inline=False,
+            )
+            embed.add_field(
+                name="👑 Main admin",
+                value=("`/admin-add` `/admin-remove` `/admin-list` `/purge-prot` "
+                       "`/purge-remove-prot` `/purge-list-protected` `/purge-vm-all` "
+                       "`/confirm-purge-all` `/purge-data` `/confirm-purge` `/exec`"),
+                inline=False,
+            )
+        embed.set_footer(text="Vizion Panel · SK Hosting · SARTAHK & SKA")
+        return embed
+
     # -------------------------------------------------------- slash commands
     def slash_command(name, description):
         """Create an app_commands.Command from a dispatcher handler."""
@@ -1607,6 +1663,9 @@ def register_bot_commands(*, client, tree, discord, app_commands, helpers):
                            value: str = None, extra: str = None):
             await interaction.response.defer(ephemeral=True, thinking=True)
             actor = _actor(interaction.user.id, getattr(interaction.user, "display_name", ""))
+            if name in ("help", "commands"):
+                await interaction.followup.send(embed=help_embed(bool(actor["admin"])), ephemeral=True)
+                return
             argv = {"vps_id": vps_id, "discord_id": target, "user": target, "value": value,
                     "amount": value, "name": extra, "text": extra, "command": extra,
                     "reason": extra, "node": extra, "plan": extra, "type": extra,
@@ -1772,6 +1831,10 @@ def register_bot_commands(*, client, tree, discord, app_commands, helpers):
             return
         command, args = parts[0].lower(), parts[1:]
         try:
+            if command in ("help", "commands"):
+                actor = _actor(message.author.id, getattr(message.author, "display_name", ""))
+                await message.reply(embed=help_embed(bool(actor["admin"])), mention_author=False)
+                return
             text = await prefix_dispatch(message, command, args)
             await message.reply(text, mention_author=False)
         except Exception:

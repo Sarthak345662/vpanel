@@ -1,0 +1,6 @@
+#!/workspace/chats/17fdb23a77b52bbf0e8f88eb/.venv/bin/python3.12
+import sys
+from dotenv.__main__ import cli
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(cli())

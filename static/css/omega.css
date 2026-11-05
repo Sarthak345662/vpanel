@@ -47,3 +47,23 @@
 .omega-action-overlay .oao-dots i:nth-child(2){animation-delay:.15s;background:#a78bfa}
 .omega-action-overlay .oao-dots i:nth-child(3){animation-delay:.3s;background:#34d399}
 @keyframes oao-bounce{0%,100%{transform:translateY(0);opacity:.55}50%{transform:translateY(-7px);opacity:1}}
+
+
+/* circle loader used by every action overlay */
+.omega-action-overlay .oao-spin{width:56px;height:56px;margin:0 auto;position:relative}
+.omega-action-overlay .oao-spin::before,
+.omega-action-overlay .oao-spin::after{content:"";position:absolute;border-radius:50%;
+  border:3px solid transparent}
+.omega-action-overlay .oao-spin::before{inset:0;border-top-color:#a855f7;border-right-color:#c084fc;
+  animation:oao-spin .85s linear infinite;box-shadow:0 0 18px rgba(168,85,247,.35)}
+.omega-action-overlay .oao-spin::after{inset:9px;border-bottom-color:#7c3aed;
+  animation:oao-spin 1.4s linear infinite reverse}
+@keyframes oao-spin{to{transform:rotate(360deg)}}
+/* small corner spinner for ordinary form saves */
+#omega-mini-spin{position:fixed;top:18px;right:18px;z-index:9997;width:26px;height:26px;
+  border-radius:50%;border:3px solid rgba(168,85,247,.22);border-top-color:#a855f7;
+  opacity:0;transition:opacity .2s;pointer-events:none}
+#omega-mini-spin.show{opacity:1;animation:oao-spin .8s linear infinite}
+.brand-mark img,.sidebar-logo img{width:100%;height:100%;object-fit:contain;border-radius:10px}
+@media (prefers-reduced-motion: reduce){.omega-action-overlay .oao-spin::before,
+  .omega-action-overlay .oao-spin::after,#omega-mini-spin.show{animation-duration:2.6s}}

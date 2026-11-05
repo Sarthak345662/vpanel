@@ -31,10 +31,10 @@
     el.innerHTML =
       '<div class="oco-card">' +
         '<div class="oco-ring"><span></span><span></span><span></span><b>⚡</b></div>' +
-        '<h3>VPS ban raha hai…</h3>' +
+        '<h3>Creating your VPS…</h3>' +
         '<p class="oco-step">Starting…</p>' +
         '<div class="oco-bar"><i></i></div>' +
-        '<small>Please wait — SSH ready hote hi page khud khul jayega.</small>' +
+        '<small>Please wait — the page opens automatically once SSHX is ready.</small>' +
       '</div>';
     document.body.appendChild(el);
     requestAnimationFrame(function(){ el.classList.add('show'); });
@@ -62,7 +62,7 @@
     const el = overlay();
     if (timer) { clearInterval(timer); timer = null; }
     el.querySelector('h3').textContent = 'VPS ready 🎉';
-    el.querySelector('.oco-step').textContent = 'SSH credentials ban gaye';
+    el.querySelector('.oco-step').textContent = 'SSHX link is ready';
     el.querySelector('.oco-bar i').style.width = '100%';
     el.classList.add('done');
     const colors = ['#22d3ee', '#a78bfa', '#34d399', '#f59e0b', '#fb7185'];
@@ -85,7 +85,7 @@
   });
 })();
 
-/* ---- action animation: start / stop / restart / SSH repair -------------- */
+/* ---- action animation: start / stop / restart / SSHX repair ------------- */
 (function(){
   if (window.__omegaActionAnim) return;
   window.__omegaActionAnim = true;
@@ -109,7 +109,7 @@
       el = document.createElement('div');
       el.id = 'omega-action-overlay';
       el.className = 'omega-action-overlay';
-      el.innerHTML = '<div class="oao-card"><div class="oao-dots"><i></i><i></i><i></i></div>' +
+      el.innerHTML = '<div class="oao-card"><div class="oao-spin"><i></i></div>' +
                      '<h4></h4><p></p></div>';
       document.body.appendChild(el);
     }
@@ -128,6 +128,22 @@
     const a = match(form.getAttribute('action'));
     if (!a) return;
     show(a);
+  }, true);
+  function miniSpin(){
+    let el = document.getElementById('omega-mini-spin');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'omega-mini-spin';
+      document.body.appendChild(el);
+    }
+    requestAnimationFrame(function(){ el.classList.add('show'); });
+  }
+  document.addEventListener('submit', function(ev){
+    const form = ev.target;
+    if (!form || !form.getAttribute) return;
+    if (match(form.getAttribute('action'))) return;
+    if ((form.getAttribute('method') || 'get').toLowerCase() === 'get') return;
+    miniSpin();
   }, true);
   const nativeFetch = window.fetch;
   if (nativeFetch) {

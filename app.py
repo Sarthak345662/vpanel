@@ -710,7 +710,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
         {% if icon %}
         <img src="{{ icon }}" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
         {% else %}
-        <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
+        <img src="/logo" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
         {% endif %}
         {{ settings.site_name if settings else 'Vizion Panel' }}
     </a>
@@ -879,7 +879,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1057,11 +1057,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <div class="landing-page">
         <div class="hero-section">
             <div style="display: flex; justify-content: center; align-items: center; gap: 10px; margin-bottom: 8px;">
-                {% if custom_icon %}
-                <img src="{{ custom_icon }}" alt="Icon" style="width:32px;height:32px;border-radius:8px;object-fit:contain;animation:float 3s ease-in-out infinite;">
-                {% else %}
-                <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:32px;height:32px;border-radius:8px;object-fit:contain;animation:float 3s ease-in-out infinite;">
-                {% endif %}
+                <img src="/logo" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
                 <span style="font-size: 20px; font-weight: 700;">{{ settings.site_name if settings else 'Vizion Panel' }}</span>
             </div>
             <div style="display: flex; justify-content: center; margin-bottom: 32px;">
@@ -1182,7 +1178,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign in — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1381,11 +1377,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <div class="auth-header">
                 <div class="auth-logo">
                     <div class="auth-logo-icon">
-                        {% if custom_icon %}
-                        <img src="{{ custom_icon }}" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
-                        {% else %}
-                        <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
-                        {% endif %}
+                        <img src="/logo" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
                     </div>
                 </div>
                 <h1>Welcome back</h1>
@@ -1439,7 +1431,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Create account — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1644,11 +1636,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <div class="auth-header">
                 <div class="auth-logo">
                     <div class="auth-logo-icon">
-                        {% if custom_icon %}
-                        <img src="{{ custom_icon }}" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
-                        {% else %}
-                        <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
-                        {% endif %}
+                        <img src="/logo" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
                     </div>
                 </div>
                 <h1>Create account</h1>
@@ -1720,7 +1708,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
@@ -2317,14 +2305,17 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         </div>
                         {% endif %}
 
-                        {% if vps['ssh_command'] %}
-                        {% set is_sshx = 'sshx.io' in vps['ssh_command'] %}
+                        {% if vps['ssh_command'] and 'sshx.io' in vps['ssh_command'] %}
                         <div class="ssh-box">
                             <code>{{ vps['ssh_command'] }}</code>
                         </div>
+                        <a class="btn btn-ghost btn-sm mb-3" href="{{ vps['ssh_command'] }}" target="_blank" rel="noopener" style="width: 100%;">
+                            <svg width="14" height="14"><use href="#icon-terminal"/></svg>
+                            Open SSHX
+                        </a>
                         <button class="btn btn-ghost btn-sm mb-3" onclick='copyToClipboard({{ vps['ssh_command']|tojson }})' style="width: 100%;">
                             <svg width="14" height="14"><use href="#icon-copy"/></svg>
-                            {% if is_sshx %}Copy URL{% else %}Copy SSH command{% endif %}
+                            Copy SSHX link
                         </button>
                         {% endif %}
 
@@ -2432,7 +2423,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
 
@@ -2866,7 +2857,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ vps['container_name'] }} — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -3066,53 +3057,24 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         <div class="card fade-in">
                             <div class="card-title">
                                 <svg width="18" height="18"><use href="#icon-key"/></svg>
-                                SSHx Access
+                                SSHX Access
                             </div>
-                            {% if vps['ssh_command'] %}
-                            {% if vps['ssh_password'] %}
-                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;">SSHX command:</p>
-                            <div class="ssh-box">
-                                <code>{{ vps['ssh_command'] }}</code>
-                            </div>
-                            <form method="POST" action="{{ url_for('fix_vps_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
-                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Fix SSHX access (public IP + port)</button>
+                            {% if vps['ssh_command'] and 'sshx.io' in vps['ssh_command'] %}
+                            <p class="text-dim" style="font-size:12px;margin-bottom:8px;">Open this browser link for a terminal. No password or port needed.</p>
+                            <div class="ssh-box"><code>{{ vps['ssh_command'] }}</code></div>
+                            <a class="btn btn-primary btn-sm" href="{{ vps['ssh_command'] }}" target="_blank" rel="noopener" style="width:100%;text-decoration:none;margin-bottom:8px;">Open SSHX</a>
+                            <button class="btn btn-ghost btn-sm" onclick='copyToClipboard({{ vps['ssh_command']|tojson }})' style="width:100%;margin-bottom:8px;">Copy SSHX link</button>
+                            <form method="POST" action="{{ url_for('regen_ssh', vps_id=vps['id']) }}">
+                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Regenerate SSHX link</button>
                             </form>
-                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;margin-top:6px;">Password: <strong>{{ vps['ssh_password'] }}</strong></p>
                             {% else %}
-                            <p class="text-dim" style="font-size:12px;margin-bottom:10px;">Open this link to connect:</p>
-                            <div class="ssh-box">
-                                <code>{{ vps['ssh_command'] }}</code>
-                            </div>
-                            <button class="btn btn-ghost btn-sm" onclick='copyToClipboard({{ vps['ssh_command']|tojson }})' style="width:100%;">
-                                <svg width="14" height="14"><use href="#icon-copy"/></svg>
-                                Copy URL
-                            </button>
-                            {% endif %}
-                            {% else %}
-                            <p class="text-dim" style="font-size:13px;">Start the instance to get SSHX credentials.</p>
+                            <p class="text-dim" style="font-size:13px;">No SSHX link yet. Create one and the VPS opens in your browser.</p>
+                            <form method="POST" action="{{ url_for('regen_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
+                                <button class="btn btn-primary btn-sm" type="submit" style="width:100%;">Create SSHX link</button>
+                            </form>
                             {% endif %}
                         </div>
 
-                        <div class="card fade-in">
-                            <div class="card-title">
-                                <svg width="18" height="18"><use href="#icon-shield"/></svg>
-                                Credentials
-                            </div>
-                            <div class="info-list">
-                                <div class="info-item">
-                                    <span class="info-label">User</span>
-                                    <span class="info-value">root</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="info-label">Password</span>
-                                    <span class="info-value">root</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="info-label">SSHX port</span>
-                                    <span class="info-value">22</span>
-                                </div>
-                            </div>
-                        </div>
                     </div>
 
                     <div>
@@ -3387,7 +3349,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ vps['container_name'] }} — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced {
             background: var(--bg);
@@ -3701,50 +3663,24 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         <div class="card fade-in">
                             <div class="card-title">
                                 <svg width="18" height="18"><use href="#icon-key"/></svg>
-                                SSHx Access
+                                SSHX Access
                             </div>
-                            {% if vps['ssh_command'] %}
-                            {% if vps['ssh_password'] %}
-                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;">SSHX command:</p>
-                            <div class="ssh-box">
-                                <code>{{ vps['ssh_command'] }}</code>
-                            </div>
-                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;margin-top:6px;">Password: <strong>{{ vps['ssh_password'] }}</strong></p>
+                            {% if vps['ssh_command'] and 'sshx.io' in vps['ssh_command'] %}
+                            <p class="text-dim" style="font-size:12px;margin-bottom:8px;">Open this browser link for a terminal. No password or port needed.</p>
+                            <div class="ssh-box"><code>{{ vps['ssh_command'] }}</code></div>
+                            <a class="btn btn-primary btn-sm" href="{{ vps['ssh_command'] }}" target="_blank" rel="noopener" style="width:100%;text-decoration:none;margin-bottom:8px;">Open SSHX</a>
+                            <button class="btn btn-ghost btn-sm" onclick='copyToClipboard({{ vps['ssh_command']|tojson }})' style="width:100%;margin-bottom:8px;">Copy SSHX link</button>
+                            <form method="POST" action="{{ url_for('admin_regen_ssh', vps_id=vps['id']) }}">
+                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Regenerate SSHX link</button>
+                            </form>
                             {% else %}
-                            <p class="text-dim" style="font-size:12px;margin-bottom:10px;">Open this link to connect:</p>
-                            <div class="ssh-box">
-                                <code>{{ vps['ssh_command'] }}</code>
-                            </div>
-                            <button class="btn btn-ghost btn-sm" onclick='copyToClipboard({{ vps['ssh_command']|tojson }})' style="width:100%;">
-                                <svg width="14" height="14"><use href="#icon-copy"/></svg>
-                                Copy URL
-                            </button>
-                            {% endif %}
-                            {% else %}
-                            <p class="text-dim" style="font-size:13px;">Start the instance to get SSHX credentials.</p>
+                            <p class="text-dim" style="font-size:13px;">No SSHX link yet. Create one and the VPS opens in your browser.</p>
+                            <form method="POST" action="{{ url_for('admin_regen_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
+                                <button class="btn btn-primary btn-sm" type="submit" style="width:100%;">Create SSHX link</button>
+                            </form>
                             {% endif %}
                         </div>
 
-                        <div class="card fade-in">
-                            <div class="card-title">
-                                <svg width="18" height="18"><use href="#icon-shield"/></svg>
-                                Credentials
-                            </div>
-                            <div class="info-list">
-                                <div class="info-item">
-                                    <span class="info-label">User</span>
-                                    <span class="info-value">root</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="info-label">Password</span>
-                                    <span class="info-value">root</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="info-label">SSHX port</span>
-                                    <span class="info-value">22</span>
-                                </div>
-                            </div>
-                        </div>
                     </div>
 
                     <div>
@@ -4003,7 +3939,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>All VPS — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -4233,7 +4169,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My Profile — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         .profile-grid{display:grid;grid-template-columns:1fr 1.5fr;gap:16px;margin-bottom:20px}
         .activity-ip-col,.activity-time-col{display:table-cell}
@@ -4431,7 +4367,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Port Forwarding — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -4692,7 +4628,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Panel Settings — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -4954,7 +4890,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Node Management — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -5236,7 +5172,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>System Logs — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         .stat-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
         .stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px;display:flex;align-items:center;gap:12px;transition:transform .2s,box-shadow .2s}
@@ -5479,7 +5415,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Users — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -5704,7 +5640,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Manager — {{ vps['container_name'] }}</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         .file-path { display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:12px;font-size:12px; }
@@ -5929,7 +5865,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Process Manager — {{ vps['container_name'] }}</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         .proc-bar { height:4px;border-radius:2px;background:var(--border);overflow:hidden; }
@@ -6026,7 +5962,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Notifications — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -6156,7 +6092,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vizion Panel</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -6245,7 +6181,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vizion Panel</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -6326,7 +6262,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vizion Panel</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -6441,7 +6377,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>System Info — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -6646,7 +6582,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OS Icons — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
 </head>
 <body>
     {% include 'icons.html' %}
@@ -6720,7 +6656,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>API Docs — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative}
@@ -7676,7 +7612,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>User Usage Report — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         .page-advanced{background:var(--bg);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative}
@@ -7885,7 +7821,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Expiring VPS — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <style>
         .page-advanced{background:var(--bg);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative}
@@ -8054,7 +7990,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ vps['container_name'] }} &mdash; Terminal</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
+    <link rel="icon" href="/logo">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -11281,29 +11217,75 @@ def restart_vps(vps_id):
     except Exception as e:
         flash(f"Error restarting VPS: {str(e)}", 'error')
     return redirect(url_for('vps_detail', vps_id=vps_id))
+_VIZION_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Vizion">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#c084fc"/><stop offset="0.5" stop-color="#a855f7"/><stop offset="1" stop-color="#6d28d9"/>
+  </linearGradient><linearGradient id="s" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#c7bcd8"/>
+  </linearGradient></defs>
+  <rect width="256" height="256" rx="56" fill="#0b0714"/>
+  <circle cx="128" cy="124" r="98" fill="none" stroke="url(#g)" stroke-width="8"/>
+  <circle cx="128" cy="124" r="84" fill="#120a20"/>
+  <path d="M62 78h30l36 82 36-82h30l-56 122h-20z" fill="url(#s)"/>
+  <path d="M128 78h30l-30 68z" fill="url(#g)" opacity="0.85"/>
+  <text x="128" y="232" text-anchor="middle" font-family="Inter,Segoe UI,sans-serif" font-size="17" font-weight="700" letter-spacing="4" fill="#c084fc">VIZION</text>
+</svg>"""
+
+
+@app.route('/logo')
+def brand_logo():
+    """Serve the configured logo (upload, bundled SVG or remote URL) reliably."""
+    from pathlib import Path as _LogoPath
+    from flask import Response as _LogoResponse, redirect as _logo_redirect, send_file as _send_logo
+
+    target = "/static/img/vizion-logo.svg"
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT logo_url FROM settings LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        if row and row["logo_url"]:
+            target = str(row["logo_url"]).strip() or target
+    except Exception:
+        pass
+
+    if target.lower().startswith(("http://", "https://")):
+        resp = _logo_redirect(target)
+    else:
+        rel = target[len("/static/"):] if target.startswith("/static/") else target.lstrip("/")
+        resp = None
+        try:
+            candidate = _LogoPath(app.root_path) / "static" / rel
+            if candidate.is_file():
+                resp = _send_logo(str(candidate), max_age=0)
+        except Exception:
+            resp = None
+        if resp is None:
+            resp = _LogoResponse(_VIZION_LOGO_SVG, mimetype="image/svg+xml")
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 def _refresh_ssh_credentials(vps_row, node):
-    """New root password plus a public SSH port that really accepts TCP."""
+    """Fresh browser SSHX link for a VPS (no SSH port, no password)."""
     name = vps_row["container_id"] or vps_row["container_name"]
     password = secrets.token_urlsafe(18)
     if not node["is_local"]:
         result, code = call_node_api(node["node_url"], node["api_key"],
                                      f"/api/container/{name}/regen-ssh", method="POST",
-                                     data={"method": "password"}, timeout=120)
-        command = (result or {}).get("ssh_command") or ""
-        password = (result or {}).get("password") or password
-        if code not in (200, 201, 202) or not command:
-            raise RuntimeError((result or {}).get("error") or "The node could not prepare SSH access")
-        return command, password
+                                     data={"method": "sshx"}, timeout=150)
+        raw = ""
+        if isinstance(result, dict):
+            raw = str(result.get("ssh_command") or result.get("link") or result.get("url") or "")
+        match = re.search(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+", raw or str(result or ""))
+        if code not in (200, 201, 202) or not match:
+            raise RuntimeError((result or {}).get("error") or "The node could not create an SSHX link")
+        return match.group(0), ""
     if lxc_status(name) != "running":
         lxc_start(name)
         lxc_wait_running(name, timeout=150)
-    ok, _output = lxc_set_root_password(name, password)
-    if not ok:
-        raise RuntimeError("Could not set the root password inside the VPS")
-    host, port = _ensure_lxc_ssh_access(name)
-    if not host or not port:
-        raise RuntimeError("Could not open an SSHX port on this node")
-    return f"ssh root@{host} -p {port}", password
+    return _omega_bot_ensure_sshx(vps_row["id"], force=True), ""
 
 
 @app.route('/vps/<int:vps_id>/regen-ssh', methods=['POST'])
@@ -15875,15 +15857,12 @@ def fix_vps_ssh(vps_id):
         return redirect(url_for("vps_detail", vps_id=vps_id))
     password = vps_row["ssh_password"] or secrets.token_urlsafe(16)
     if node["is_local"]:
-        ok, _output = lxc_set_root_password(vps_row["container_id"], password)
-        if not ok:
-            flash("Could not set the root password inside the VPS. Start it and retry.", "error")
+        try:
+            command = _omega_bot_ensure_sshx(vps_row["id"], force=True)
+        except Exception as exc:
+            flash(f"Could not create an SSHX link: {exc}", "error")
             return redirect(url_for("vps_detail", vps_id=vps_id))
-        host, port = _ensure_lxc_ssh_access(vps_row["container_id"])
-        if not host or not port:
-            flash("Could not open an SSHX port on this node.", "error")
-            return redirect(url_for("vps_detail", vps_id=vps_id))
-        command = f"ssh root@{host} -p {port}"
+        password = ""
     else:
         result, code = call_node_api(
             node["node_url"], node["api_key"],
@@ -15893,7 +15872,7 @@ def fix_vps_ssh(vps_id):
         command = (result or {}).get("ssh_command") or ""
         password = (result or {}).get("password") or password
         if code not in (200, 201, 202) or not command:
-            flash("The node could not prepare SSH access for this VPS.", "error")
+            flash("The node could not create an SSHX link for this VPS.", "error")
             return redirect(url_for("vps_detail", vps_id=vps_id))
     conn = get_db()
     try:
@@ -15907,7 +15886,7 @@ def fix_vps_ssh(vps_id):
     return redirect(url_for("vps_detail", vps_id=vps_id))
 
 
-def _omega_bot_ensure_sshx(vps_id):
+def _omega_bot_ensure_sshx(vps_id, force=False):
     """Return a working SSHX URL for a VPS, creating and caching one if needed."""
     import re as _re
     conn = get_db()
@@ -15919,7 +15898,7 @@ def _omega_bot_ensure_sshx(vps_id):
         raise RuntimeError("VPS was not found")
 
     cached = str(vps["ssh_command"] or "").strip()
-    if cached and "sshx.io/" in cached:
+    if not force and cached and "sshx.io/" in cached:
         return cached
 
     current, node = get_node_for_vps(int(vps_id))
@@ -15935,6 +15914,8 @@ def _omega_bot_ensure_sshx(vps_id):
         if state != "running":
             lxc_start(container_id)
 
+        if force:
+            lxc_attach(container_id, "pkill -x sshx >/dev/null 2>&1; rm -f /tmp/sshx_output.log", timeout=20)
         # Install only when missing; keep the SSHX process in the VPS container.
         command = (
             'export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"; '

@@ -1504,7 +1504,7 @@ def register_hosting_extensions(app, deps) -> None:
             primary = _colour(current.get("theme_primary"), "#a855f7")
             secondary = _colour(current.get("theme_secondary"), "#7c3aed")
             theme_bg = _colour(current.get("theme_bg"), "#0a0712")
-            logo = _esc(str(current.get("logo_url") or "/static/img/vizion-logo.svg"))
+            logo = "/logo"
             css += (
                 ":root{--accent:%s !important;--accent-hover:%s !important;--accent2:%s !important;"
                 "--brand:%s !important;--accent-glow:%s33 !important;--bg:%s !important;}"
@@ -1517,6 +1517,8 @@ def register_hosting_extensions(app, deps) -> None:
                 % (primary, secondary, secondary, primary, primary, theme_bg, theme_bg,
                    primary, secondary, logo)
             )
+            css += (".brand-mark img,.sidebar-logo img,.logo-mark img{width:100%;height:100%;"
+                    "object-fit:contain;border-radius:10px;}")
             widget = ""
             config = ai.configured(current)
             if session.get("user_id") and config["enabled"] and config["has_key"]:
