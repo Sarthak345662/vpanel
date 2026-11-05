@@ -830,7 +830,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
 
     <div class="sidebar-footer">
         <div style="margin-bottom:4px;">{{ settings.footer_text if settings else 'Powered by Vizion Panel' }}</div>
-        <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;">Created by <strong>FLOATIX</strong> · Credit: <strong>sartahk34</strong> · <strong>SKa</strong></div>
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;"><strong>SK Hosting</strong> · <strong>SARTAHK &amp; SKA</strong></div>
         <a href="/logout" style="color:var(--text-dim);text-decoration:none;font-size:11px;display:flex;align-items:center;gap:4px;">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
             Sign out
@@ -1164,7 +1164,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
         </div>
 
         <div class="footer-bar">
-            <span>{{ settings.footer_text if settings else 'Vizion Panel' }} &mdash; Created by <strong>FLOATIX</strong> · Credit: <strong>sartahk34</strong> · <strong>SKa</strong></span>
+            <span>{{ settings.footer_text if settings else 'Vizion Panel' }} &mdash; <strong>SK Hosting</strong> · <strong>SARTAHK &amp; SKA</strong></span>
             <span style="display: flex; gap: 16px;">
                 <a href="/login" style="color: var(--text-dim); text-decoration: none;">Login</a>
                 <a href="/register" style="color: var(--text-dim); text-decoration: none;">Register</a>
@@ -1425,7 +1425,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <div class="auth-footer">
                 Don't have an account? <a href="/register">Create one</a>
             </div>
-            <div style="text-align:center;font-size:10px;color:var(--text-dim);margin-top:12px;">Created by <strong>FLOATIX</strong> · Credit: <strong>sartahk34</strong> · <strong>SKa</strong></div>
+            <div style="text-align:center;font-size:10px;color:var(--text-dim);margin-top:12px;"><strong>SK Hosting</strong> · <strong>SARTAHK &amp; SKA</strong></div>
         </div>
     </div>
 
@@ -1706,7 +1706,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <div class="auth-footer">
                 Already have an account? <a href="/login">Sign in</a>
             </div>
-            <div style="text-align:center;font-size:10px;color:var(--text-dim);margin-top:12px;">Created by <strong>FLOATIX</strong> · Credit: <strong>sartahk34</strong> · <strong>SKa</strong></div>
+            <div style="text-align:center;font-size:10px;color:var(--text-dim);margin-top:12px;"><strong>SK Hosting</strong> · <strong>SARTAHK &amp; SKA</strong></div>
         </div>
     </div>
 
@@ -8134,19 +8134,20 @@ EMBEDDED_CSS = """@import url('https://fonts.googleapis.com/css2?family=Inter:wg
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-    --bg: #09090b;
-    --bg-elevated: #18181b;
-    --bg-card: #1c1c21;
-    --bg-hover: #27272a;
-    --bg-input: #0f0f12;
-    --border: #27272a;
-    --border-focus: #3f3f46;
-    --text: #fafafa;
-    --text-muted: #a1a1aa;
-    --text-dim: #71717a;
-    --accent: #ffffff;
-    --accent-hover: #e4e4e7;
-    --accent-glow: rgba(255, 255, 255, 0.15);
+    --bg: #0a0712;
+    --bg-elevated: #141021;
+    --bg-card: #1a1428;
+    --bg-hover: #241a36;
+    --bg-input: #0e0a17;
+    --border: #2b2140;
+    --border-focus: #4c3a6b;
+    --text: #f7f3ff;
+    --text-muted: #b9abcf;
+    --text-dim: #8d7ea6;
+    --accent: #a855f7;
+    --accent-hover: #c084fc;
+    --accent-glow: rgba(168, 85, 247, 0.28);
+    --accent-2: #7c3aed;
     --green: #22c55e;
     --green-bg: rgba(34, 197, 94, 0.12);
     --red: #ef4444;
@@ -9668,7 +9669,7 @@ def init_db():
             footer_text TEXT DEFAULT 'Powered by Vizion Panel',
             timezone TEXT DEFAULT 'Asia/Kolkata',
             registration_enabled INTEGER DEFAULT 1,
-            logo_url TEXT DEFAULT '/static/img/logo.png',
+            logo_url TEXT DEFAULT '/static/img/vizion-logo.svg',
             favicon_url TEXT DEFAULT '/static/img/favicon.ico',
             cpu_threshold INTEGER DEFAULT 90,
             ram_threshold INTEGER DEFAULT 90,
@@ -14218,6 +14219,9 @@ def _omega_columns():
             ("turnstile_site_key", "TEXT DEFAULT ''"), ("turnstile_secret_key", "TEXT DEFAULT ''"),
             ("font_family", "TEXT DEFAULT ''"), ("google_font_url", "TEXT DEFAULT ''"),
             ("discord_bot_token", "TEXT DEFAULT ''"), ("bot_prefix", "TEXT DEFAULT '!'"),
+            ("theme_primary", "TEXT DEFAULT '#a855f7'"), ("theme_secondary", "TEXT DEFAULT '#7c3aed'"),
+            ("theme_bg", "TEXT DEFAULT '#0a0712'"),
+            ("logo_url", "TEXT DEFAULT '/static/img/vizion-logo.svg'"),
             ("bot_banner_url", "TEXT DEFAULT ''"), ("bot_logo_url", "TEXT DEFAULT ''"),
             ("bot_banner_path", "TEXT DEFAULT ''"), ("bot_logo_path", "TEXT DEFAULT ''"),
             ("panel_public_url", "TEXT DEFAULT ''"),
@@ -14627,7 +14631,7 @@ OMEGA_INTEGRATIONS_HTML = r'''<!doctype html><html lang="en"><head><meta charset
 <section class="card"><h2>OAuth login</h2><div class="grid"><div><h3>Google</h3><label>Client ID</label><input name="google_client_id" value="{{settings.google_client_id}}"><label>Client Secret (blank = unchanged)</label><input type="password" name="google_client_secret"><label>Redirect URI</label><input name="google_redirect_uri" value="{{settings.google_redirect_uri}}"><p class="hint">Callback: https://YOUR-DOMAIN/auth/google/callback</p></div><div><h3>Discord</h3><label>Client ID</label><input name="discord_client_id" value="{{settings.discord_client_id}}"><label>Client Secret (blank = unchanged)</label><input type="password" name="discord_client_secret"><label>Redirect URI</label><input name="discord_redirect_uri" value="{{settings.discord_redirect_uri}}"><p class="hint">Callback: https://YOUR-DOMAIN/auth/discord/callback</p></div></div></section>
 <section class="card"><h2>Cloudflare Turnstile</h2><label>Site Key</label><input name="turnstile_site_key" value="{{settings.turnstile_site_key}}"><label>Secret Key (blank = unchanged)</label><input type="password" name="turnstile_secret_key"></section>
 <section class="card"><h2>Discord bot (runs inside app.py)</h2><label>Bot Token (blank = unchanged)</label><input type="password" name="discord_bot_token"><label>Bot owner Discord ID (full admin access)</label><input name="bot_owner_id" value="{{settings.bot_owner_id}}" placeholder="e.g. 123456789012345678" inputmode="numeric"><p class="hint">The owner id is added to the bot admin check next to MAIN_ADMIN_ID and bot_admins.json.</p><label>Command Prefix</label><input name="bot_prefix" maxlength="5" value="{{settings.bot_prefix or '!'}}"><label class="check"><input type="checkbox" name="sshx_enabled" {% if settings.sshx_enabled %}checked{% endif %}> Enable SSHX button</label><label class="check"><input type="checkbox" name="web_terminal_enabled" {% if settings.web_terminal_enabled %}checked{% endif %}> Enable Web Terminal button</label><label>Public panel URL</label><input name="panel_public_url" value="{{settings.panel_public_url}}" placeholder="https://panel.example.com"><label>Bot banner URL (HTTPS)</label><input name="bot_banner_url" value="{{settings.bot_banner_url}}"><label>Or upload bot banner</label><input type="file" name="bot_banner_file" accept="image/png,image/jpeg,image/gif,image/webp"><label>Bot logo URL (HTTPS)</label><input name="bot_logo_url" value="{{settings.bot_logo_url}}"><label>Or upload bot logo</label><input type="file" name="bot_logo_file" accept="image/png,image/jpeg,image/gif,image/webp"><label>Discord ID for health alerts (optional)</label><input name="health_alert_discord_id" value="{{settings.health_alert_discord_id}}"></section>
-<section class="card"><h2>Branding</h2><label>CSS font-family</label><input name="font_family" value="{{settings.font_family}}" placeholder="Inter, sans-serif"><label>Google Fonts CSS URL (optional, HTTPS fonts.googleapis.com only)</label><input name="google_font_url" value="{{settings.google_font_url}}" placeholder="https://fonts.googleapis.com/css2?family=Inter:wght@400;600"><p class="hint">Footer credit is set to Created by FLOATIX.</p></section>
+<section class="card"><h2>Branding</h2><label>CSS font-family</label><input name="font_family" value="{{settings.font_family}}" placeholder="Inter, sans-serif"><label>Google Fonts CSS URL (optional, HTTPS fonts.googleapis.com only)</label><input name="google_font_url" value="{{settings.google_font_url}}" placeholder="https://fonts.googleapis.com/css2?family=Inter:wght@400;600"><p class="hint">Footer credit is set to Powered by SK Hosting.</p></section>
 <section class="card"><h2>Node health monitoring</h2><label>Check interval in seconds (30–86400)</label><input type="number" name="health_interval_seconds" min="30" max="86400" value="{{settings.health_interval_seconds or 86400}}"><p class="hint">The background worker checks the local Incus/LXD socket and every configured remote node, stores history in SQLite and updates node status.</p><a href="/admin/health" style="color:#6ccfff">Open health dashboard →</a></section>
 <button type="submit">Save all integration settings</button></form><p><a href="/settings" style="color:#6ccfff">← Back to Panel Settings</a></p></main></body></html>'''
 
@@ -14895,8 +14899,8 @@ def _os_image_alias(os_type):
 for _template_name, _template_source in list(EMBEDDED_TEMPLATES.items()):
     if isinstance(_template_source, str):
         EMBEDDED_TEMPLATES[_template_name] = (_template_source
-            .replace("Created by <strong>FLOATIX</strong> · Credit: <strong>sartahk34</strong> · <strong>SKa</strong>", "Created by <strong>FLOATIX</strong> · Credit: <strong>sartahk34</strong> · <strong>SKa</strong>")
-            .replace("Created by FLOATIX", "Created by FLOATIX"))
+            .replace("<strong>SK Hosting</strong> · <strong>SARTAHK &amp; SKA</strong>", "<strong>SK Hosting</strong> · <strong>SARTAHK &amp; SKA</strong>")
+            .replace("Powered by SK Hosting", "Powered by SK Hosting"))
 
 # Expose integrations from the existing admin Settings page.
 if "settings.html" in EMBEDDED_TEMPLATES:
@@ -15444,7 +15448,7 @@ def _os_image_alias(os_type):
 # Premium health dashboard. This same HTML is also supplied as status_page.html.
 OMEGA_HEALTH_PAGE_HTML = r'''<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vizion Status · FLOATIX</title>
+<title>Vizion Status · SK Hosting</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -15456,7 +15460,7 @@ OMEGA_HEALTH_PAGE_HTML = r'''<!doctype html>
 .table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:700px}th{text-align:left;color:#8ea2bc;font-size:10px;text-transform:uppercase;letter-spacing:1px;padding:12px;border-bottom:1px solid var(--line)}td{padding:13px 12px;border-bottom:1px solid rgba(148,163,184,.09);font-size:12px;color:#dce8f7}tbody tr:hover{background:rgba(72,215,255,.035)}.muted{color:var(--muted)}.foot{text-align:center;color:#63738d;font-size:11px;padding:24px 0 5px}
 @media(max-width:850px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.top{align-items:flex-start;flex-direction:column}}@media(max-width:480px){body{padding:22px 13px}.grid{gap:9px}.metric{padding:14px}.metric .value{font-size:23px}}
 </style></head><body><main class="shell">
-<header class="top"><div><div class="eyebrow">FLOATIX · INFRASTRUCTURE</div><h1>System Status</h1><p class="sub">Live health overview for Vizion Panel and connected nodes.</p></div><div class="actions"><a class="btn" href="/admin/integrations">Settings</a><a class="btn" href="/admin/health">Refresh status ↗</a></div></header>
+<header class="top"><div><div class="eyebrow">SK HOSTING · INFRASTRUCTURE</div><h1>System Status</h1><p class="sub">Live health overview for Vizion Panel and connected nodes.</p></div><div class="actions"><a class="btn" href="/admin/integrations">Settings</a><a class="btn" href="/admin/health">Refresh status ↗</a></div></header>
 <section class="grid">
 <div class="glass metric"><div class="label">Panel status</div><div class="value {{ 'online' if panel_status == 'online' else 'offline' if panel_status == 'offline' else 'unknown' }}"><span class="dot"></span>{{ panel_status|upper }}</div><div class="hint">Application and database</div></div>
 <div class="glass metric"><div class="label">Online nodes</div><div class="value">{{ online_nodes }} / {{ nodes|length }}</div><div class="hint">Connected compute nodes</div></div>

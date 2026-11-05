@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Vizion Store">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c084fc"/><stop offset="0.5" stop-color="#a855f7"/><stop offset="1" stop-color="#6d28d9"/>
+    </linearGradient>
+    <linearGradient id="s" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#c7bcd8"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="#0b0714"/>
+  <circle cx="128" cy="124" r="98" fill="none" stroke="url(#g)" stroke-width="8"/>
+  <circle cx="128" cy="124" r="84" fill="#120a20"/>
+  <path d="M62 78h30l36 82 36-82h30l-56 122h-20z" fill="url(#s)"/>
+  <path d="M128 78h30l-30 68z" fill="url(#g)" opacity="0.85"/>
+  <text x="128" y="232" text-anchor="middle" font-family="Inter,Segoe UI,sans-serif" font-size="17" font-weight="700" letter-spacing="4" fill="#c084fc">VIZION</text>
+</svg>

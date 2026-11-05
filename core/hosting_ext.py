@@ -46,6 +46,10 @@ SETTINGS_COLUMNS = [
     ("grok_api_key", "TEXT DEFAULT ''"),
     ("grok_model", "TEXT DEFAULT ''"),
     ("brand_name", "TEXT DEFAULT 'SK Hosting'"),
+    ("theme_primary", "TEXT DEFAULT '#a855f7'"),
+    ("theme_secondary", "TEXT DEFAULT '#7c3aed'"),
+    ("theme_bg", "TEXT DEFAULT '#0a0712'"),
+    ("logo_url", "TEXT DEFAULT '/static/img/vizion-logo.svg'"),
     ("background_path", "TEXT DEFAULT ''"),
     ("background_dim", "INTEGER DEFAULT 55"),
     ("nonkvm_image", "TEXT DEFAULT ''"),
@@ -285,6 +289,26 @@ ADMIN_BRANDING_BODY = """
         <input class="x-input" name="footer_text" value="{{ settings['footer_text'] }}"></div>
       <button class="x-btn" type="submit">Save name</button>
     </form>
+  </div>
+  <div class="x-card">
+    <h2>Theme colours</h2>
+    <form method="post" action="{{ url_for('ext_admin_branding') }}" enctype="multipart/form-data">
+      <div class="x-grid">
+        <div class="x-field"><label>Primary colour</label>
+          <input class="x-input" type="color" name="theme_primary" value="{{ settings['theme_primary'] or '#a855f7' }}"></div>
+        <div class="x-field"><label>Secondary colour</label>
+          <input class="x-input" type="color" name="theme_secondary" value="{{ settings['theme_secondary'] or '#7c3aed' }}"></div>
+        <div class="x-field"><label>Background colour</label>
+          <input class="x-input" type="color" name="theme_bg" value="{{ settings['theme_bg'] or '#0a0712' }}"></div>
+      </div>
+      <div class="x-field"><label>Logo URL (https://… or /static/…)</label>
+        <input class="x-input" name="logo_url" value="{{ settings['logo_url'] or '' }}" placeholder="/static/img/vizion-logo.svg"></div>
+      <div class="x-field"><label>Or upload a logo (PNG, JPG, GIF or WebP, max 4 MB)</label>
+        <input class="x-input" type="file" name="logo_file" accept="image/png,image/jpeg,image/gif,image/webp"></div>
+      <div class="x-field"><label class="x-check"><input type="checkbox" name="remove_logo"> Reset to the default Vizion logo</label></div>
+      <button class="x-btn" type="submit">Save theme</button>
+    </form>
+    <p class="x-note">The default logo ships with the panel (credit: SARTAHK &amp; SKA). Colours apply to every page, the sidebar logo and buttons.</p>
   </div>
   <div class="x-card">
     <h2>Background image</h2>
@@ -894,6 +918,36 @@ def register_hosting_extensions(app, deps) -> None:
                         (site_name, brand_name, footer_text, settings_id),
                     )
                 conn.execute("UPDATE settings SET background_dim=? WHERE id=?", (dim, settings_id))
+                theme = {}
+                for field in ("theme_primary", "theme_secondary", "theme_bg"):
+                    value = (request.form.get(field) or "").strip()
+                    if re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+                        theme[field] = value
+                if theme:
+                    conn.execute("UPDATE settings SET " + ", ".join(f"{name}=?" for name in theme) + " WHERE id=?",
+                                 (*theme.values(), settings_id))
+                logo_url = (request.form.get("logo_url") or "").strip()
+                logo_upload = request.files.get("logo_file")
+                if request.form.get("remove_logo"):
+                    conn.execute("UPDATE settings SET logo_url='/static/img/vizion-logo.svg' WHERE id=?", (settings_id,))
+                elif logo_url:
+                    if not (logo_url.startswith("/static/") or logo_url.lower().startswith(("http://", "https://"))) \
+                            or len(logo_url) > 500:
+                        conn.commit()
+                        flash("Logo link must start with https://, http:// or /static/", "error")
+                        return redirect(url_for("ext_admin_branding"))
+                    conn.execute("UPDATE settings SET logo_url=? WHERE id=?", (logo_url, settings_id))
+                elif logo_upload and logo_upload.filename:
+                    data, suffix, error = _read_image(logo_upload)
+                    if error:
+                        conn.commit()
+                        flash(error, "error")
+                        return redirect(url_for("ext_admin_branding"))
+                    upload_dir.mkdir(parents=True, exist_ok=True)
+                    filename = f"logo_{uuid.uuid4().hex[:12]}{suffix}"
+                    (upload_dir / filename).write_bytes(data)
+                    conn.execute("UPDATE settings SET logo_url=? WHERE id=?",
+                                 (f"/static/uploads/{filename}", settings_id))
                 background_url = (request.form.get("background_url") or "").strip()
                 if background_url:
                     if not background_url.lower().startswith(("http://", "https://")) or len(background_url) > 500:
@@ -1444,6 +1498,25 @@ def register_hosting_extensions(app, deps) -> None:
                     ".auth-grid{opacity:.25 !important;}"
                     % (dim, dim, _esc(background))
                 )
+            def _colour(value, fallback):
+                text = str(value or "").strip()
+                return text if re.fullmatch(r"#[0-9a-fA-F]{6}", text) else fallback
+            primary = _colour(current.get("theme_primary"), "#a855f7")
+            secondary = _colour(current.get("theme_secondary"), "#7c3aed")
+            theme_bg = _colour(current.get("theme_bg"), "#0a0712")
+            logo = _esc(str(current.get("logo_url") or "/static/img/vizion-logo.svg"))
+            css += (
+                ":root{--accent:%s !important;--accent-hover:%s !important;--accent2:%s !important;"
+                "--brand:%s !important;--accent-glow:%s33 !important;--bg:%s !important;}"
+                "body{background-color:%s !important;}"
+                ".btn.primary,.btn-primary,.x-btn.primary{background:linear-gradient(135deg,%s,%s) !important;"
+                "border-color:transparent !important;}"
+                ".brand-mark,.logo-mark,.auth-logo{background-image:url('%s') !important;"
+                "background-size:contain !important;background-repeat:no-repeat !important;"
+                "background-position:center !important;font-size:0 !important;color:transparent !important;}"
+                % (primary, secondary, secondary, primary, primary, theme_bg, theme_bg,
+                   primary, secondary, logo)
+            )
             widget = ""
             config = ai.configured(current)
             if session.get("user_id") and config["enabled"] and config["has_key"]:
