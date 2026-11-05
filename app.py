@@ -15240,15 +15240,21 @@ def _omega_guess_family(alias="", props=None, fallback=""):
 
 
 def _omega_os_icon(family):
-    family = str(family or "linux").lower()
+    fid = str(family or "linux").lower()
     icons = {
-        "ubuntu": "🟠", "debian": "🌀", "alpine": "🏔️", "rocky": "🪨",
-        "alma": "🟢", "centos": "🔴", "fedora": "🔵", "arch": "⚙️",
-        "opensuse": "🦎", "suse": "🦎", "kali": "🐉", "oracle": "🔶",
-        "amazon": "🟧", "gentoo": "🟣", "void": "⚫", "mageia": "🔷",
-        "clearlinux": "💠", "linux": "🐧",
+        "ubuntu": "🟠", "alpine": "🏔️",
+        "rocky": "🪨", "alma": "🟢", "centos": "🔴", "fedora": "🔵",
+        "arch": "⚙️", "kali": "🐉", "oracle": "🔶", "amazon": "🟧",
+        "gentoo": "🟣", "void": "⚫", "mageia": "🔷", "clearlinux": "💠",
+        "opensuse": "🦎", "suse": "🦎",
+        # Debian gets a distinct icon per release codename so the page shows real names.
+        "debian-11": "🌀", "debian-bullseye": "🌀", "debian-chad": "🌀",
+        "debian-12": "🌀", "debian-bollard": "🌀",
+        "debian-13": "🌀", "debian-trixie": "🌀",
     }
-    return icons.get(family, "🐧")
+    if fid in icons:
+        return icons[fid]
+    return "🐧"
 
 
 def _omega_normalize_image_record(raw, node_id=None, node_name="Local node"):
