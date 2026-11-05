@@ -802,8 +802,8 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             System Info
         </a>
         <a href="/os-icons" class="sidebar-link {{ 'active' if active_page == 'osicons' }}">
-            <svg width="18" height="18"><use href="#icon-server"/></svg>
-            OS Icons
+            <svg width="18" height="18"><use href="#icon-info"/></svg>
+            OS Images
         </a>
         <a href="/settings" class="sidebar-link {{ 'active' if active_page == 'settings' }}">
             <svg width="18" height="18"><use href="#icon-settings"/></svg>
@@ -6630,7 +6630,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
         {{ sidebar('osicons', settings, custom_icon) }}
 
         <div class="main-content">
-            {{ topbar('OS Icons', 'osicons') }}
+            {{ topbar('OS Images', 'osicons') }}
 
             <div class="page">
                 <div class="breadcrumbs">
@@ -15482,6 +15482,10 @@ LXC_IMAGE_MAP.update({
     "debian-13": "debian/13",
     "debian:13": "debian/13",
     "debian/13": "debian/13",
+    # Debian 11 support for VPS creation flows (bullseye / chad etc)
+    "debian-11": "debian/11",
+    "debian:11": "debian/11",
+    "debian/11": "debian/11",
 })
 
 def _os_image_alias(os_type):
