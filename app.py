@@ -8040,10 +8040,14 @@ ubuntu-26.04    # Ubuntu 26.04</div>
         #mobile-keys button { flex: 1 0 auto; min-width: 54px; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a2d55; background: #1a1428; color: #f7f3ff; font: 600 13px/1 Inter, sans-serif; }
         #mobile-keys button:active { background: #2b2140; }
         #mobile-keys button.danger { background: #7f1d1d; border-color: #b91c1c; }
+        #terminal-error { color: #fbbf24; font: 600 13px/1.4 Inter, sans-serif; padding: 8px 10px; }
+        #xterm-hint { color: #9ca3af; font: 11px/1.4 Inter, sans-serif; text-align: center; padding: 8px; }
     </style>
 </head>
 <body>
     <div id="terminal-container"></div>
+    <div id="terminal-error" style="display:none"></div>
+    <div id="xterm-hint" style="display:none">Terminal scripts are loading. If this stays white, open the browser console (F12) and tell the admin what errors appear.</div>
     <div id="mobile-keys">
         <button type="button" data-key="tab">Tab</button>
         <button type="button" data-key="esc">Esc</button>
@@ -8056,70 +8060,90 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
     <script>
         (function() {
-            var term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'Menlo, Monaco, "Courier New", monospace', theme: { background: '#000', foreground: '#f0f0f0' } });
-            var fitAddon = new FitAddon.FitAddon();
-            term.loadAddon(fitAddon);
-            term.open(document.getElementById('terminal-container'));
-            fitAddon.fit();
-            var sessionId = null;
-            function sendResize() {
-                if (!sessionId) return;
-                var dims = fitAddon.proposeDimensions();
-                if (!dims) return;
-                fetch('/api/vps/{{ vps['id'] }}/terminal/resize?session=' + sessionId + '&cols=' + dims.cols + '&rows=' + dims.rows, { method: 'POST' });
+            var errorBox = document.getElementById('terminal-error');
+            var hintBox = document.getElementById('xterm-hint');
+            function showError(msg) {
+                errorBox.textContent = 'Terminal error: ' + msg;
+                errorBox.style.display = 'block';
+                if (hintBox) hintBox.style.display = 'block';
+                console.error('[omega-terminal]', msg);
             }
-            function createSession() {
-                var dims = fitAddon.proposeDimensions();
-                var cols = dims ? dims.cols : 80;
-                var rows = dims ? dims.rows : 24;
-                fetch('/api/vps/{{ vps['id'] }}/terminal/session?cols=' + cols + '&rows=' + rows, { method: 'POST' })
-                    .then(function(r) { return r.json(); })
-                    .then(function(data) {
-                        sessionId = data.session_id;
-                        connectStream();
-                        setTimeout(function() { sendResize(); }, 100);
-                    })
-                    .catch(function(err) {
-                        term.writeln('Failed to create terminal session');
-                    });
-            }
-            function connectStream() {
-                var evtSource = new EventSource('/api/vps/{{ vps['id'] }}/terminal/stream?session=' + sessionId);
-                evtSource.onmessage = function(event) {
-                    if (event.data === '__TERMINAL_CLOSED__') {
-                        evtSource.close();
-                        return;
-                    }
+            try {
+                if (typeof Terminal === 'undefined') { showError('xterm.min.js did not load. Check the browser console for blocked CDN requests.'); return; }
+                if (typeof FitAddon === 'undefined') { showError('xterm addon-fit did not load. The terminal will still work but will not auto-fit the window.'); }
+            } catch(e) { showError('Terminal libraries could not be read: ' + e.message); return; }
+            try {
+                var term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'Menlo, Monaco, "Courier New", monospace', theme: { background: '#000', foreground: '#f0f0f0' } });
+                var fitAddon = (typeof FitAddon !== 'undefined') ? new FitAddon.FitAddon() : null;
+                if (fitAddon) term.loadAddon(fitAddon);
+                term.open(document.getElementById('terminal-container'));
+                if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
+                var sessionId = null;
+                function sendResize() {
+                    if (!sessionId) return;
+                    var dims = fitAddon ? fitAddon.proposeDimensions() : null;
+                    if (!dims) return;
+                    fetch('/api/vps/{{ vps['id'] }}/terminal/resize?session=' + sessionId + '&cols=' + dims.cols + '&rows=' + dims.rows, { method: 'POST' })
+                        .catch(function(e) { console.warn('[omega-terminal] resize failed', e); });
+                }
+                function createSession() {
+                    var dims = fitAddon ? fitAddon.proposeDimensions() : null;
+                    var cols = dims ? dims.cols : 80;
+                    var rows = dims ? dims.rows : 24;
+                    fetch('/api/vps/{{ vps['id'] }}/terminal/session?cols=' + cols + '&rows=' + rows, { method: 'POST' })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            if (!data || !data.session_id) { showError('Server refused to start a terminal session: ' + (data && data.error ? data.error : 'no session_id')); return; }
+                            sessionId = data.session_id;
+                            connectStream();
+                            setTimeout(function() { sendResize(); }, 100);
+                        })
+                        .catch(function(err) {
+                            showError('Could not reach the terminal backend: ' + (err && err.message ? err.message : String(err)));
+                        });
+                }
+                function connectStream() {
                     try {
-                        var bytes = Uint8Array.from(atob(event.data), function(c) { return c.charCodeAt(0); });
-                        term.write(bytes);
-                    } catch(e) {
-                        term.write(event.data);
-                    }
-                };
-                evtSource.onerror = function() { evtSource.close(); };
-            }
-            function sendInput(data) {
-                if (!sessionId || !data) return;
-                fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
-                    method: 'POST',
-                    body: data
+                        var evtSource = new EventSource('/api/vps/{{ vps['id'] }}/terminal/stream?session=' + sessionId);
+                        evtSource.onmessage = function(event) {
+                            if (event.data === '__TERMINAL_CLOSED__') {
+                                evtSource.close();
+                                return;
+                            }
+                            try {
+                                var bytes = Uint8Array.from(atob(event.data), function(c) { return c.charCodeAt(0); });
+                                term.write(bytes);
+                            } catch(e) {
+                                term.write(event.data);
+                            }
+                        };
+                        evtSource.onerror = function() { evtSource.close(); };
+                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); }
+                }
+                function sendInput(data) {
+                    if (!sessionId || !data) return;
+                    fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
+                        method: 'POST',
+                        body: data
+                    });
+                }
+                term.onData(sendInput);
+                var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
+                document.querySelectorAll('#mobile-keys button').forEach(function(button) {
+                    button.addEventListener('click', function() {
+                        sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
+                        term.focus();
+                    });
                 });
+                function onResize() {
+                    if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
+                    sendResize();
+                }
+                window.addEventListener('resize', onResize);
+                createSession();
+            } catch(e) {
+                showError('Terminal failed to initialize: ' + e.message);
             }
-            term.onData(sendInput);
-            var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
-            document.querySelectorAll('#mobile-keys button').forEach(function(button) {
-                button.addEventListener('click', function() {
-                    sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
-                    term.focus();
-                });
-            });
-            function onResize() {
-                fitAddon.fit();
-                sendResize();
-            }
-            window.addEventListener('resize', onResize);
-            createSession();
         })();
     </script>
 </body>
