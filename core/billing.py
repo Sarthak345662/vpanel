@@ -124,6 +124,9 @@ BILLING_PAGE = """<!DOCTYPE html>
         }
         .plan-card-features { margin: 4px 0 6px; }
         .plan-card-buy { margin-top: 6px; }
+        .page-section-head { margin-bottom: 18px; }
+        .page-section-head h2 { font-size: 18px; margin: 0 0 6px; }
+        .page-section-head .text-dim { color: var(--text-dim); }
     </style>
 </head>
 <body>
@@ -143,7 +146,13 @@ BILLING_PAGE = """<!DOCTYPE html>
             {% if not enabled %}
             <div class="card"><p class="text-dim">Billing is currently disabled by the administrator.</p></div>
             {% else %}
-            <div class="vps-grid">
+            <div class="page-section-head">
+                <div>
+                    <h2 class="text-xl" style="font-weight:700;color:var(--text);">Available plans</h2>
+                    <p class="text-dim" style="font-size:13px;">Choose a plan. Your order is created instantly and paid on Discord.</p>
+                </div>
+            </div>
+            <div class="plans-grid">
                 {% for plan in plans %}
                 <div class="plan-card" style="background-image: url('{{ plan['bg_image'] or '' }}');">
                     <div class="plan-card-overlay">

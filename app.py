@@ -8047,17 +8047,33 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body { height: 100%; background: #000; overflow: hidden; }
-        #terminal-container { height: calc(100% - 58px); padding: 8px; }
-        #mobile-keys { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 6px; padding: 8px; background: rgba(14,10,23,.96); border-top: 1px solid #2b2140; overflow-x: auto; z-index: 9; }
+        html, body { height: 100%; background: #040208; overflow: hidden; }
+        #terminal-background { position: fixed; inset: 0; background:
+            radial-gradient(ellipse 80% 55% at 50% -10%, rgba(255,255,255,.05), transparent 60%),
+            radial-gradient(ellipse 70% 50% at 30% 110%, rgba(168,85,247,.06), transparent 60%),
+            radial-gradient(ellipse 60% 45% at 75% 120%, rgba(236,72,153,.05), transparent 60%),
+            #040208; }
+        #terminal-container { position: relative; z-index: 2; height: calc(100% - 64px); padding: 10px; }
+        #terminal-topbar { position: relative; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: rgba(12,8,20,.7); backdrop-filter: blur(8px); border-top: 1px solid #251a33; }
+        #terminal-topbar .tt-icon { width: 18px; height: 18px; display: inline-block; background: linear-gradient(135deg,#a855f7,#34d399); border-radius: 5px; }
+        #terminal-topbar .tt-title { font: 600 12px/1 Inter, sans-serif; color: #e9d5ff; letter-spacing: .3px; }
+        #terminal-topbar .tt-status { margin-left: auto; font: 500 11px/1 Inter, sans-serif; color: #9ca3af; }
+        #terminal-topbar .tt-status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399; box-shadow: 0 0 6px #34d399; margin-right: 5px; vertical-align: middle; }
+        #mobile-keys { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 6px; padding: 8px; background: rgba(14,10,23,.96); border-top: 1px solid #2b2140; overflow-x: auto; z-index: 10; }
         #mobile-keys button { flex: 1 0 auto; min-width: 54px; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a2d55; background: #1a1428; color: #f7f3ff; font: 600 13px/1 Inter, sans-serif; }
         #mobile-keys button:active { background: #2b2140; }
         #mobile-keys button.danger { background: #7f1d1d; border-color: #b91c1c; }
-        #terminal-error { color: #fbbf24; font: 600 13px/1.4 Inter, sans-serif; padding: 8px 10px; }
-        #xterm-hint { color: #9ca3af; font: 11px/1.4 Inter, sans-serif; text-align: center; padding: 8px; }
+        #terminal-error { position: relative; z-index: 3; color: #fbbf24; font: 600 13px/1.4 Inter, sans-serif; padding: 8px 10px; }
+        #xterm-hint { position: relative; z-index: 3; color: #9ca3af; font: 11px/1.4 Inter, sans-serif; text-align: center; padding: 8px; }
     </style>
 </head>
 <body>
+    <div id="terminal-background"></div>
+    <div id="terminal-topbar">
+        <span class="tt-icon"></span>
+        <span class="tt-title">{{ vps['container_name'] }}</span>
+        <span class="tt-status"><span class="dot"></span>Connected</span>
+    </div>
     <div id="terminal-container"></div>
     <div id="terminal-error" style="display:none"></div>
     <div id="xterm-hint" style="display:none">Terminal scripts are loading. If this stays white, open the browser console (F12) and tell the admin what errors appear.</div>
