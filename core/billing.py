@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS billing_plans (
     features TEXT DEFAULT '',
     is_active INTEGER DEFAULT 1,
     sort_order INTEGER DEFAULT 0,
+    bg_image TEXT DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """
@@ -55,6 +56,75 @@ BILLING_PAGE = """<!DOCTYPE html>
     <title>Billing — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="icon" href="/logo">
+    <style>
+        .plans-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 18px;
+        }
+        .plan-card {
+            position: relative;
+            border-radius: 18px;
+            overflow: hidden;
+            min-height: 300px;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            border: 1px solid rgba(255,255,255,.06);
+            box-shadow: 0 10px 30px -12px rgba(0,0,0,.6);
+        }
+        .plan-card-overlay {
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(180deg, rgba(11,10,19,.18) 0%, rgba(11,10,19,.9) 70%, rgba(11,10,19,.98) 100%);
+            padding: 22px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        .plan-card-price {
+            font-size: 26px;
+            font-weight: 800;
+            color: #fff;
+            letter-spacing: -0.5px;
+        }
+        .plan-card-period { font-size: 14px; font-weight: 500; color: rgba(255,255,255,.7); margin-left: 4px; }
+        .plan-card-name {
+            font-size: 20px;
+            font-weight: 700;
+            color: #fff;
+            margin: 2px 0 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .plan-card-specs {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+        }
+        .plan-spec {
+            text-align: center;
+            background: rgba(255,255,255,.06);
+            border-radius: 8px;
+            padding: 8px 2px;
+        }
+        .plan-spec .spec-num {
+            display: block;
+            font-size: 16px;
+            font-weight: 700;
+            color: #fff;
+        }
+        .plan-spec span:last-child {
+            font-size: 11px;
+            color: rgba(255,255,255,.7);
+            display: block;
+            margin-top: 2px;
+        }
+        .plan-card-features { margin: 4px 0 6px; }
+        .plan-card-buy { margin-top: 6px; }
+    </style>
 </head>
 <body>
 {% include 'icons.html' %}
@@ -75,21 +145,21 @@ BILLING_PAGE = """<!DOCTYPE html>
             {% else %}
             <div class="vps-grid">
                 {% for plan in plans %}
-                <div class="vps-card">
-                    <div class="vps-card-header">
-                        <span class="vps-name">{{ plan['name'] }}</span>
-                        <span class="status status-running">{{ currency }} {{ '%.2f'|format(plan['price'] or 0) }}</span>
+                <div class="plan-card" style="background-image: url('{{ plan['bg_image'] or '' }}');">
+                    <div class="plan-card-overlay">
+                        <div class="plan-card-price">{{ currency }} {{ '%.2f'|format(plan['price'] or 0) }} <span class="plan-card-period">/ {{ plan['duration_days'] }} days</span></div>
+                        <div class="plan-card-name">{{ plan['name'] }}</div>
+                        <div class="plan-card-specs">
+                            <div class="plan-spec"><span class="spec-num">{{ plan['cpu'] }}</span>CPU</div>
+                            <div class="plan-spec"><span class="spec-num">{{ plan['ram'] }}</span>MiB RAM</div>
+                            <div class="plan-spec"><span class="spec-num">{{ plan['disk'] }}</span>GiB Disk</div>
+                            <div class="plan-spec"><span class="spec-num">{{ plan['vps_limit'] }}</span>VPS</div>
+                        </div>
+                        {% if plan['features'] %}<p class="plan-card-features text-dim" style="font-size:12px;white-space:pre-line;">{{ plan['features'] }}</p>{% endif %}
+                        <form method="post" action="{{ url_for('billing_buy', plan_id=plan['id']) }}">
+                            <button class="btn primary full plan-card-buy" type="submit">Buy this plan</button>
+                        </form>
                     </div>
-                    <div class="vps-specs">
-                        <div class="vps-spec">{{ plan['cpu'] }} CPU</div>
-                        <div class="vps-spec">{{ plan['ram'] }} MiB RAM</div>
-                        <div class="vps-spec">{{ plan['disk'] }} GiB Disk</div>
-                    </div>
-                    <p class="text-dim" style="font-size:12px;margin:8px 0 4px;">{{ plan['vps_limit'] }} VPS · {{ plan['duration_days'] }} days</p>
-                    {% if plan['features'] %}<p class="text-dim" style="font-size:12px;white-space:pre-line;">{{ plan['features'] }}</p>{% endif %}
-                    <form method="post" action="{{ url_for('billing_buy', plan_id=plan['id']) }}">
-                        <button class="btn primary full" type="submit">Buy plan</button>
-                    </form>
                 </div>
                 {% else %}
                 <div class="empty">No plans are available right now.</div>
@@ -186,6 +256,7 @@ ADMIN_PAGE = """<!DOCTYPE html>
                     <label>Duration (days)<input name="duration_days" type="number" min="1" value="{{ edit_plan['duration_days'] if edit_plan else 30 }}"></label>
                     <label>Sort order<input name="sort_order" type="number" value="{{ edit_plan['sort_order'] if edit_plan else 0 }}"></label>
                     <label>Features (one per line)<textarea name="features" rows="3">{{ edit_plan['features'] if edit_plan else '' }}</textarea></label>
+                    <label>Plan background image URL<input name="bg_image" value="{{ edit_plan['bg_image'] if edit_plan else '' }}" placeholder="https://... (optional)"></label>
                     <label>Visible<select name="is_active"><option value="1" {% if not edit_plan or edit_plan['is_active'] %}selected{% endif %}>Yes</option><option value="0" {% if edit_plan and not edit_plan['is_active'] %}selected{% endif %}>No</option></select></label>
                     <button class="btn primary full" type="submit">{{ 'Save changes' if edit_plan else 'Add plan' }}</button>
                 </form>
@@ -407,20 +478,21 @@ def register_billing(app, get_db, login_required, admin_required, get_settings, 
             name, number("price", 0.0), number("cpu", 1, int), number("ram", 1024, int),
             number("disk", 20, int), number("vps_limit", 1, int), max(1, number("duration_days", 30, int)),
             (request.form.get("features") or "").strip()[:1000], 1 if request.form.get("is_active") == "1" else 0,
-            number("sort_order", 0, int),
+            number("sort_order", 0, int), bg_image,
         )
+        bg_image = (request.form.get("bg_image") or "").strip()[:1000]
         conn = get_db()
         try:
             if plan_id:
                 conn.execute(
                     """UPDATE billing_plans SET name=?, price=?, cpu=?, ram=?, disk=?, vps_limit=?,
-                              duration_days=?, features=?, is_active=?, sort_order=? WHERE id=?""",
+                              duration_days=?, features=?, is_active=?, sort_order=?, bg_image=? WHERE id=?""",
                     values + (plan_id,),
                 )
             else:
                 conn.execute(
                     """INSERT INTO billing_plans (name, price, cpu, ram, disk, vps_limit, duration_days,
-                              features, is_active, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                              features, is_active, sort_order, bg_image) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     values,
                 )
             conn.commit()

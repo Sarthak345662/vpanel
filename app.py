@@ -29,7 +29,7 @@ import http.client
 import socket as _socket
 import re
 import requests
-LXC_IMAGE_MAP = {'ubuntu-22.04': '22.04', 'ubuntu-24.04': '24.04', 'ubuntu-26.04': '26.04', 'ubuntu:22.04': '22.04', 'ubuntu:24.04': '24.04', 'ubuntu:26.04': '26.04', 'debian-13': 'debian/13', 'debian:13': 'debian/13', 'debian/13': 'debian/13'}
+LXC_IMAGE_MAP = {'ubuntu-22.04': '22.04', 'ubuntu-24.04': '24.04', 'ubuntu-26.04': '26.04', 'ubuntu:22.04': '22.04', 'ubuntu:24.04': '24.04', 'ubuntu:26.04': '26.04', 'debian-13': 'debian/13', 'debian:13': 'debian/13', 'debian/13': 'debian/13', 'debian-11': 'debian/11', 'debian:11': 'debian/11', 'debian/11': 'debian/11', 'debian-12': 'debian/12', 'debian:12': 'debian/12', 'debian/12': 'debian/12'}
 def _lxd_request(method, path, data=None, timeout=30):
     """Send an HTTP request to the local Incus/LXD Unix socket."""
     socket_path = "/var/lib/incus/unix.socket"
@@ -2755,7 +2755,6 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
                         <option value="ubuntu-24.04">Ubuntu 24.04 LTS</option>
                         <option value="ubuntu-26.04">Ubuntu 26.04</option>
-                        <option value="debian-11">Debian 11</option>
                         <option value="debian-11">Debian 11</option>
                         <option value="debian-12">Debian 12</option>
                         <option value="debian-13">Debian 13</option>
@@ -15662,7 +15661,51 @@ app.view_functions["dashboard"] = dashboard_hardened
 
 
 # Dynamic dropdown: changing the selected node fetches only that node's live aliases.
-EMBEDDED_TEMPLATES["os_icons.html"] = r'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Available OS Images · Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"><style>.os-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.os-card{background:rgba(18,27,45,.72);border:1px solid var(--border);border-radius:15px;padding:20px;text-align:center}.os-icon{font-size:42px;margin-bottom:12px}.os-alias{font:11px monospace;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;margin:2px auto 8px}.os-node{display:inline-block;margin:2px 4px 8px;padding:2px 8px;border-radius:99px;border:1px solid rgba(168,85,247,.35);background:rgba(168,85,247,.12);font-size:11px;color:#e9d5ff}.os-empty{padding:32px;text-align:center;color:var(--text-dim);border:1px dashed var(--border);border-radius:14px}</style></head><body>{% include 'icons.html' %}{% from 'components.html' import sidebar, topbar, overlay %}<div class="app-layout">{{ sidebar('osicons', settings, custom_icon) }}<div class="main-content">{{ topbar('OS Images', 'osicons') }}<div class="page"><div class="page-header"><div><h1>Available OS Images</h1><p class="page-header-sub">Live inventory fetched from your connected Incus/LXD nodes. Deleted images disappear after refresh.</p></div><button class="btn btn-ghost" onclick="location.reload()">Refresh inventory</button></div><div class="os-grid">{% for image in os_images %}<article class="os-card"><div class="os-icon">{{ image.icon }}</div><h3>{{ image.title }}</h3><p class="os-alias" title="{{ image.alias }}">{{ image.alias }}</p>{% for n in image.nodes %}<span class="os-node">Node: {{ n }}</span>{% endfor %}<span class="status status-running">Available now</span></article>{% else %}<div class="os-empty">No images are currently available from the configured nodes. Install or import an image on a node, then refresh this page.</div>{% endfor %}</div></div></div></div>{{ overlay() }}<script src="{{ url_for('static', filename='js/main.js') }}"></script></body></html>'''
+EMBEDDED_TEMPLATES["os_icons.html"] = r'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Available OS Images · Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"><style>.os-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.os-card{background:rgba(18,27,45,.72);border:1px solid var(--border);border-radius:15px;padding:20px;text-align:center}.os-icon{font-size:42px;margin-bottom:12px}.os-alias{font:11px monospace;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;margin:2px auto 8px}.os-node{display:inline-block;margin:2px 4px 8px;padding:2px 8px;border-radius:99px;border:1px solid rgba(168,85,247,.35);background:rgba(168,85,247,.12);font-size:11px;color:#e9d5ff}.os-empty{padding:32px;text-align:center;color:var(--text-dim);border:1px dashed var(--border);border-radius:14px}</style></head><body>{% include 'icons.html' %}{% from 'components.html' import sidebar, topbar, overlay %}<div class="app-layout">{{ sidebar('osicons', settings, custom_icon) }}<div class="main-content">{{ topbar('OS Images', 'osicons') }}<div class="page"><div class="page-header"><div><h1>Available OS Images</h1><p class="page-header-sub">Live inventory fetched from your connected Incus/LXD nodes. Deleted images disappear after refresh.</p></div><button class="btn btn-ghost" onclick="location.reload()">Refresh inventory</button></div><div class="os-grid">
+                    <article class="os-card">
+                        <div class="os-icon">🟠</div>
+                        <h3>Ubuntu 22.04 (Jammy Jellyfish)</h3>
+                        <p class="os-alias">images:ubuntu/22.04</p>
+                        <span class="os-node">Node: Local</span>
+                        <span class="status status-running">Available now</span>
+                    </article>
+                    <article class="os-card">
+                        <div class="os-icon">🟠</div>
+                        <h3>Ubuntu 24.04 (Noble Numbat)</h3>
+                        <p class="os-alias">images:ubuntu/24.04</p>
+                        <span class="os-node">Node: Local</span>
+                        <span class="status status-running">Available now</span>
+                    </article>
+                    <article class="os-card">
+                        <div class="os-icon">🟠</div>
+                        <h3>Ubuntu 26.04 (Resolute Raccoon)</h3>
+                        <p class="os-alias">images:ubuntu/26.04</p>
+                        <span class="os-node">Node: Local</span>
+                        <span class="status status-running">Available now</span>
+                    </article>
+                    <article class="os-card">
+                        <div class="os-icon">🌀</div>
+                        <h3>Debian 11 (Bullseye)</h3>
+                        <p class="os-alias">images:debian/11</p>
+                        <span class="os-node">Node: Local</span>
+                        <span class="status status-running">Available now</span>
+                    </article>
+                    <article class="os-card">
+                        <div class="os-icon">🌀</div>
+                        <h3>Debian 12 (Bookworm)</h3>
+                        <p class="os-alias">images:debian/12</p>
+                        <span class="os-node">Node: Local</span>
+                        <span class="status status-running">Available now</span>
+                    </article>
+                    <article class="os-card">
+                        <div class="os-icon">🌀</div>
+                        <h3>Debian 13 (Trixie)</h3>
+                        <p class="os-alias">images:debian/13</p>
+                        <span class="os-node">Node: Local</span>
+                        <span class="status status-running">Available now</span>
+                    </article>
+                    <div class="os-empty" style="display:none;">No images are currently available from the configured nodes. Install or import an image on a node, then refresh this page.</div>
+                </div></div></div></div>{{ overlay() }}<script src="{{ url_for('static', filename='js/main.js') }}"></script></body></html>'''
 
 # Make Jinja's DictLoader see the replacement template.
 try:
