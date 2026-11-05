@@ -729,6 +729,10 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <svg width="18" height="18"><use href="#icon-dashboard"/></svg>
             AI Chat
         </a>
+        <a href="/billing" class="sidebar-link {{ 'active' if active_page == 'billing' }}">
+            <svg width="18" height="18"><use href="#icon-key"/></svg>
+            Billing
+        </a>
         <a href="/ports" class="sidebar-link {{ 'active' if active_page == 'ports' }}">
             <svg width="18" height="18"><use href="#icon-key"/></svg>
             Port Forwarding
@@ -769,6 +773,10 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
         <a href="/admin/users" class="sidebar-link {{ 'active' if active_page == 'users' }}">
             <svg width="18" height="18"><use href="#icon-users"/></svg>
             Users
+        </a>
+        <a href="/admin/billing" class="sidebar-link {{ 'active' if active_page == 'adminbilling' }}">
+            <svg width="18" height="18"><use href="#icon-key"/></svg>
+            Billing &amp; Plans
         </a>
         <a href="/admin/all-vps" class="sidebar-link {{ 'active' if active_page == 'allvps' }}">
             <svg width="18" height="18"><use href="#icon-server"/></svg>
@@ -2240,9 +2248,10 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                 <div class="vps-grid" id="vpsGrid">
                     {% for vps in vps_list %}
                     <div class="vps-card" data-name="{{ vps['container_name'] }}" data-status="{{ vps['status'] }}" data-id="{{ vps['id'] }}">
-                        <div class="vps-card-header">
-                            {% if 'node_name' in vps.keys() and vps['node_name'] %}<span style="font-size:10px;color:var(--text-dim);background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;margin-left:6px;">Node: {{ vps['node_name'] }}</span>{% endif %}<span class="vps-name">{{ vps['container_name'] }}</span>{% if 'node_name' in vps.keys() and vps['node_name'] %}<span style="font-size:10px;color:var(--text-dim);background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;">Node: {{ vps['node_name'] }}</span>{% endif %}
-                            {% if vps['node_name'] %}<span class="vps-node-tag">Node: {{ vps['node_name'] }}</span>{% endif %}
+<div class="vps-card-header">
+                            <span class="vps-name">{{ vps['container_name'] }}</span>
+                            {% if 'node_name' in vps.keys() and vps['node_name'] %}<span style="font-size:10px;color:var(--text-dim);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;white-space:nowrap;background:rgba(168,85,247,.12);">Node: {{ vps['node_name'] }}</span>{% endif %}
+                            <span style="font-size:10px;color:var(--text-dim);border:1px solid rgba(96,165,250,.28);padding:2px 7px;border-radius:99px;white-space:nowrap;background:rgba(96,165,250,.12);">{{ vps['os_type']|osicon }} OS: {{ vps['os_type']|osname }}</span>
                             <div style="display:flex;align-items:center;gap:6px;">
                                 {% if vps['shared_by'] %}
                                 <span style="background:var(--accent);color:#000;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:500;">Shared</span>
@@ -2746,6 +2755,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
                         <option value="ubuntu-24.04">Ubuntu 24.04 LTS</option>
                         <option value="ubuntu-26.04">Ubuntu 26.04</option>
+                        <option value="debian-12">Debian 12</option>
                         <option value="debian-13">Debian 13</option>
                     </select>
                     <p class="text-dim" style="font-size:10px;margin-top:4px;">Choose an OS from the panel list. The selected image alias must already be available on the target node.</p>
@@ -3197,6 +3207,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                         <option value="ubuntu-22.04" {% if vps['os_type'] == 'ubuntu-22.04' %}selected{% endif %}>Ubuntu 22.04 LTS</option>
                                         <option value="ubuntu-24.04" {% if vps['os_type'] == 'ubuntu-24.04' %}selected{% endif %}>Ubuntu 24.04 LTS</option>
                                         <option value="ubuntu-26.04" {% if vps['os_type'] == 'ubuntu-26.04' %}selected{% endif %}>Ubuntu 26.04</option>
+                                        <option value="debian-12" {% if vps['os_type'] == 'debian-12' %}selected{% endif %}>Debian 12</option>
                                         <option value="debian-13" {% if vps['os_type'] == 'debian-13' %}selected{% endif %}>Debian 13</option>
                                     </select>
                                 </div>
@@ -3757,6 +3768,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                         <option value="ubuntu-22.04" {% if vps['os_type'] == 'ubuntu-22.04' %}selected{% endif %}>Ubuntu 22.04 LTS</option>
                                         <option value="ubuntu-24.04" {% if vps['os_type'] == 'ubuntu-24.04' %}selected{% endif %}>Ubuntu 24.04 LTS</option>
                                         <option value="ubuntu-26.04" {% if vps['os_type'] == 'ubuntu-26.04' %}selected{% endif %}>Ubuntu 26.04</option>
+                                        <option value="debian-12" {% if vps['os_type'] == 'debian-12' %}selected{% endif %}>Debian 12</option>
                                         <option value="debian-13" {% if vps['os_type'] == 'debian-13' %}selected{% endif %}>Debian 13</option>
                                     </select>
                                 </div>
@@ -5021,6 +5033,25 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                 </div>
                 {% endif %}
 
+                <div class="card" style="margin-bottom:16px;">
+                    <div class="card-head"><div><h2>Node List</h2><p>All nodes available on the system.</p></div></div>
+                    <table class="table">
+                        <thead><tr><th>Name</th><th>Host</th><th>VPS</th><th>RAM used</th><th>Status</th></tr></thead>
+                        <tbody>
+                        {% for node in nodes %}
+                        <tr>
+                            <td><b>{{ node['name'] }}</b>{% if node['is_local'] %} <span style="font-size:10px;color:var(--text-dim);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;background:rgba(168,85,247,.12);">Local</span>{% endif %}</td>
+                            <td class="text-dim">{{ node['hostname'] }}{% if node['node_url'] %}<br><span style="font-size:11px;">{{ node['node_url'] }}</span>{% endif %}</td>
+                            <td>{{ node['vps_count'] }} / {{ node['max_vps'] }}</td>
+                            <td>{{ (node['ram_usage'] or 0)|round(0)|int }}%</td>
+                            <td><span class="status status-{{ 'running' if node['status'] == 'online' else 'stopped' }}">{{ node['status']|capitalize }}</span></td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="5" class="text-dim">No nodes registered yet.</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
                 {% for node in nodes %}
                 <div class="card fade-in" style="margin-bottom:16px;">
                     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
@@ -8002,11 +8033,23 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { height: 100%; background: #000; overflow: hidden; }
-        #terminal-container { height: 100vh; padding: 8px; }
+        #terminal-container { height: calc(100% - 58px); padding: 8px; }
+        #mobile-keys { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 6px; padding: 8px; background: rgba(14,10,23,.96); border-top: 1px solid #2b2140; overflow-x: auto; z-index: 9; }
+        #mobile-keys button { flex: 1 0 auto; min-width: 54px; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a2d55; background: #1a1428; color: #f7f3ff; font: 600 13px/1 Inter, sans-serif; }
+        #mobile-keys button:active { background: #2b2140; }
+        #mobile-keys button.danger { background: #7f1d1d; border-color: #b91c1c; }
     </style>
 </head>
 <body>
     <div id="terminal-container"></div>
+    <div id="mobile-keys">
+        <button type="button" data-key="tab">Tab</button>
+        <button type="button" data-key="esc">Esc</button>
+        <button type="button" data-key="up">&#8593;</button>
+        <button type="button" data-key="down">&#8595;</button>
+        <button type="button" data-key="enter">Enter</button>
+        <button type="button" data-key="ctrl-c" class="danger">Ctrl + C</button>
+    </div>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
     <script>
@@ -8054,13 +8097,20 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                 };
                 evtSource.onerror = function() { evtSource.close(); };
             }
-            term.onData(function(data) {
-                if (sessionId) {
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
-                        method: 'POST',
-                        body: data
-                    });
-                }
+            function sendInput(data) {
+                if (!sessionId || !data) return;
+                fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
+                    method: 'POST',
+                    body: data
+                });
+            }
+            term.onData(sendInput);
+            var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
+            document.querySelectorAll('#mobile-keys button').forEach(function(button) {
+                button.addEventListener('click', function() {
+                    sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
+                    term.focus();
+                });
             });
             function onResize() {
                 fitAddon.fit();
@@ -15228,9 +15278,10 @@ def _omega_normalize_image_record(raw, node_id=None, node_name="Local node"):
     for alias in normalized_aliases:
         family = _omega_guess_family(alias, props, os_name)
         descriptive = " ".join(str(x) for x in (os_name, release) if x).strip()
-        label = raw.get("label") or (f"{descriptive} · {alias}" if descriptive else alias)
+        title = descriptive or _vizion_os_label(alias)
+        label = raw.get("label") or title
         result.append({
-            "alias": alias, "label": str(label), "family": family,
+            "alias": alias, "label": str(label), "title": str(title), "family": family,
             "icon": _omega_os_icon(family), "description": str(description)[:300],
             "node_id": node_id, "node_name": node_name,
         })
@@ -15419,6 +15470,9 @@ LXC_IMAGE_MAP.update({
     "ubuntu:22.04": "22.04",
     "ubuntu:24.04": "24.04",
     "ubuntu:26.04": "26.04",
+    "debian-12": "debian/12",
+    "debian:12": "debian/12",
+    "debian/12": "debian/12",
     "debian-13": "debian/13",
     "debian:13": "debian/13",
     "debian/13": "debian/13",
@@ -15558,7 +15612,7 @@ app.view_functions["dashboard"] = dashboard_hardened
 
 
 # Dynamic dropdown: changing the selected node fetches only that node's live aliases.
-EMBEDDED_TEMPLATES["os_icons.html"] = r'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Available OS Images · Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"><style>.os-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.os-card{background:rgba(18,27,45,.72);border:1px solid var(--border);border-radius:15px;padding:20px;text-align:center}.os-icon{font-size:42px;margin-bottom:12px}.os-alias{font:11px monospace;color:var(--text-dim);overflow-wrap:anywhere}.os-empty{padding:32px;text-align:center;color:var(--text-dim);border:1px dashed var(--border);border-radius:14px}</style></head><body>{% include 'icons.html' %}{% from 'components.html' import sidebar, topbar, overlay %}<div class="app-layout">{{ sidebar('osicons', settings, custom_icon) }}<div class="main-content">{{ topbar('OS Images', 'osicons') }}<div class="page"><div class="page-header"><div><h1>Available OS Images</h1><p class="page-header-sub">Live inventory fetched from your connected Incus/LXD nodes. Deleted images disappear after refresh.</p></div><button class="btn btn-ghost" onclick="location.reload()">Refresh inventory</button></div><div class="os-grid">{% for image in os_images %}<article class="os-card"><div class="os-icon">{{ image.icon }}</div><h3>{{ image.label }}</h3><p class="os-alias">{{ image.alias }}</p><p class="text-dim" style="font-size:11px">{{ image.family|upper }} · {{ image.nodes|join(', ') }}</p><span class="status status-running">Available now</span></article>{% else %}<div class="os-empty">No images are currently available from the configured nodes. Install or import an image on a node, then refresh this page.</div>{% endfor %}</div></div></div></div>{{ overlay() }}<script src="{{ url_for('static', filename='js/main.js') }}"></script></body></html>'''
+EMBEDDED_TEMPLATES["os_icons.html"] = r'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Available OS Images · Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"><style>.os-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.os-card{background:rgba(18,27,45,.72);border:1px solid var(--border);border-radius:15px;padding:20px;text-align:center}.os-icon{font-size:42px;margin-bottom:12px}.os-alias{font:11px monospace;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;margin:2px auto 8px}.os-node{display:inline-block;margin:2px 4px 8px;padding:2px 8px;border-radius:99px;border:1px solid rgba(168,85,247,.35);background:rgba(168,85,247,.12);font-size:11px;color:#e9d5ff}.os-empty{padding:32px;text-align:center;color:var(--text-dim);border:1px dashed var(--border);border-radius:14px}</style></head><body>{% include 'icons.html' %}{% from 'components.html' import sidebar, topbar, overlay %}<div class="app-layout">{{ sidebar('osicons', settings, custom_icon) }}<div class="main-content">{{ topbar('OS Images', 'osicons') }}<div class="page"><div class="page-header"><div><h1>Available OS Images</h1><p class="page-header-sub">Live inventory fetched from your connected Incus/LXD nodes. Deleted images disappear after refresh.</p></div><button class="btn btn-ghost" onclick="location.reload()">Refresh inventory</button></div><div class="os-grid">{% for image in os_images %}<article class="os-card"><div class="os-icon">{{ image.icon }}</div><h3>{{ image.title }}</h3><p class="os-alias" title="{{ image.alias }}">{{ image.alias }}</p>{% for n in image.nodes %}<span class="os-node">Node: {{ n }}</span>{% endfor %}<span class="status status-running">Available now</span></article>{% else %}<div class="os-empty">No images are currently available from the configured nodes. Install or import an image on a node, then refresh this page.</div>{% endfor %}</div></div></div></div>{{ overlay() }}<script src="{{ url_for('static', filename='js/main.js') }}"></script></body></html>'''
 
 # Make Jinja's DictLoader see the replacement template.
 try:
@@ -16970,3 +17024,56 @@ if __name__ == "__main__":
     omega_start_background_workers()
     # Disable Flask's reloader: it would start a second bot and duplicate health checks.
     app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False, threaded=True)
+
+
+# --- OS labels and per-distro icons -----------------------------------------
+_VIZION_OS_LABELS = {
+    "ubuntu-22.04": "Ubuntu 22.04 LTS", "ubuntu-24.04": "Ubuntu 24.04 LTS",
+    "ubuntu-26.04": "Ubuntu 26.04 LTS", "ubuntu-20.04": "Ubuntu 20.04 LTS",
+    "debian-11": "Debian 11", "debian-12": "Debian 12", "debian-13": "Debian 13",
+    "almalinux-9": "AlmaLinux 9", "rocky-9": "Rocky Linux 9", "centos-9": "CentOS Stream 9",
+    "fedora-40": "Fedora 40", "fedora-41": "Fedora 41", "alpine-3.20": "Alpine 3.20",
+    "arch-latest": "Arch Linux", "opensuse-15": "openSUSE Leap 15", "kali-latest": "Kali Linux",
+}
+
+
+def _vizion_os_label(slug):
+    key = str(slug or "").strip()
+    if not key:
+        return "Unknown OS"
+    if key in _VIZION_OS_LABELS:
+        return _VIZION_OS_LABELS[key]
+    family = _omega_guess_family(key)
+    version = ""
+    for token in key.replace(":", "-").replace("/", "-").split("-"):
+        if token and token[0].isdigit():
+            version = token
+            break
+    names = {
+        "ubuntu": "Ubuntu", "debian": "Debian", "alpine": "Alpine", "rocky": "Rocky Linux",
+        "alma": "AlmaLinux", "centos": "CentOS", "fedora": "Fedora", "arch": "Arch Linux",
+        "opensuse": "openSUSE", "suse": "SUSE", "kali": "Kali Linux", "oracle": "Oracle Linux",
+        "amazon": "Amazon Linux", "gentoo": "Gentoo", "linux": key.replace("-", " ").title(),
+    }
+    name = names.get(family, key.replace("-", " ").title())
+    if version and version not in name:
+        name = f"{name} {version}"
+    if family == "ubuntu" and version and "LTS" not in name:
+        name = f"{name} LTS"
+    return name
+
+
+def _vizion_os_emoji(slug):
+    return _omega_os_icon(_omega_guess_family(str(slug or "")))
+
+
+app.jinja_env.filters["osname"] = _vizion_os_label
+app.jinja_env.filters["osicon"] = _vizion_os_emoji
+
+try:
+    from core.billing import register_billing as _register_billing
+    _register_billing(app, get_db=get_db, login_required=login_required,
+                      admin_required=admin_required, get_settings=get_settings,
+                      templates=EMBEDDED_TEMPLATES, add_log=add_log)
+except Exception:
+    app.logger.exception("Billing module could not be registered")

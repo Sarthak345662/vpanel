@@ -1,8 +1,8 @@
 """AI client for the Vizion hosting panel.
 
-The panel uses xAI Grok only. The key lives in the settings table and every AI
-feature (web assistant, Discord /ask, prefix !ai) calls through this module, so
-one key change applies everywhere.
+Two providers are supported: Google Gemini (the default) and xAI Grok. Keys live
+in the settings table and every AI feature (web assistant, Discord /ask, prefix
+!ai) calls through this module, so one key change applies everywhere.
 """
 from __future__ import annotations
 
@@ -12,18 +12,30 @@ from typing import Iterable
 import requests
 
 GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
+GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 PROVIDERS: dict[str, dict] = {
+    "gemini": {
+        "label": "Google Gemini",
+        "default_model": "gemini-2.5-flash",
+        "fallbacks": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-flash"],
+        "key_url": "https://aistudio.google.com/app/apikey",
+        "key_hint": "Google AI Studio key (starts with AIza...)",
+        "key_column": "gemini_api_key",
+        "model_column": "gemini_model",
+    },
     "grok": {
         "label": "xAI Grok",
         "default_model": "grok-4.7",
         "fallbacks": ["grok-4.7", "grok-4.6", "grok-4", "grok-3"],
         "key_url": "https://console.x.ai/",
         "key_hint": "xAI API key (starts with xai-...)",
+        "key_column": "grok_api_key",
+        "model_column": "grok_model",
     },
 }
 
-DEFAULT_PROVIDER = "grok"
+DEFAULT_PROVIDER = "gemini"
 DEFAULT_SYSTEM_PROMPT = (
     "You are the built-in assistant of a Vizion hosting panel (VPS control panel). "
     "Answer short, practical questions about the user's servers, LXC containers, "
@@ -44,8 +56,10 @@ def provider_meta(provider: str | None) -> dict:
 
 def provider_slug(provider: str | None) -> str:
     slug = str(provider or "").strip().lower()
-    if slug in {"gemini", "google", "google-gemini"}:
-        return DEFAULT_PROVIDER
+    if slug in {"google", "google-gemini"}:
+        return "gemini"
+    if slug == "xai":
+        return "grok"
     return slug if slug in PROVIDERS else DEFAULT_PROVIDER
 
 
@@ -100,6 +114,41 @@ def _grok_call(api_key: str, model: str, system_prompt: str, messages: list[dict
     return text
 
 
+def _gemini_call(api_key: str, model: str, system_prompt: str, messages: list[dict],
+                 max_tokens: int, temperature: float, timeout: int) -> str:
+    contents = [
+        {"role": "model" if item.get("role") == "assistant" else "user",
+         "parts": [{"text": str(item.get("content") or "")}]}
+        for item in messages
+        if str(item.get("content") or "").strip()
+    ]
+    body: dict = {
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": int(max_tokens), "temperature": float(temperature)},
+    }
+    if system_prompt:
+        body["system_instruction"] = {"parts": [{"text": system_prompt}]}
+    response = requests.post(
+        GEMINI_ENDPOINT.format(model=model),
+        params={"key": api_key},
+        headers={"Content-Type": "application/json"},
+        json=body,
+        timeout=timeout,
+    )
+    if response.status_code >= 400:
+        raise AIError(_http_error("Gemini", response))
+    data = response.json()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        blocked = (data.get("promptFeedback") or {}).get("blockReason")
+        raise AIError(f"Gemini returned no answer{f' ({blocked})' if blocked else ''}.")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict)).strip()
+    if not text:
+        raise AIError("Gemini returned an empty answer.")
+    return text
+
+
 def _http_error(label: str, response: requests.Response) -> str:
     detail = ""
     try:
@@ -138,20 +187,21 @@ def chat(provider: str, api_key: str, model: str | None, system_prompt: str,
     if len(message) > 8000:
         message = message[:8000]
 
+    caller = _gemini_call if provider == "gemini" else _grok_call
     messages = _clean_history(history) + [{"role": "user", "content": message}]
     system_prompt = (system_prompt or DEFAULT_SYSTEM_PROMPT).strip()[:8000]
     last_error: Exception | None = None
     for candidate in model_candidates(provider, model):
         try:
-            reply = _grok_call(api_key, candidate, system_prompt, messages,
-                               max_tokens, temperature, timeout)
+            reply = caller(api_key, candidate, system_prompt, messages,
+                           max_tokens, temperature, timeout)
             return {"reply": reply, "provider": provider, "model": candidate}
         except requests.RequestException as exc:
             raise AIError(f"Could not reach {provider_meta(provider)['label']}: {exc}") from exc
         except AIError as exc:
             last_error = exc
             message_text = str(exc).lower()
-            retryable_model = any(token in message_text for token in ("not found", "404", "not supported", "does not exist", "invalid model", "model"))
+            retryable_model = any(token in message_text for token in ("not found", "404", "not supported", "does not exist", "invalid model", "model", "no longer available"))
             if retryable_model and "api key" not in message_text and "quota" not in message_text:
                 continue
             raise
@@ -161,14 +211,14 @@ def chat(provider: str, api_key: str, model: str | None, system_prompt: str,
 def provider_key(settings: dict, provider: str | None = None) -> str:
     settings = dict(settings or {})
     provider = provider_slug(provider or settings.get("ai_provider"))
-    column = "grok_api_key"
+    column = provider_meta(provider)["key_column"]
     return str(settings.get(column) or settings.get("ai_api_key") or "").strip()
 
 
 def provider_model(settings: dict, provider: str | None = None) -> str:
     settings = dict(settings or {})
     provider = provider_slug(provider or settings.get("ai_provider"))
-    column = "grok_model"
+    column = provider_meta(provider)["model_column"]
     return str(settings.get(column) or settings.get("ai_model") or "").strip() or default_model(provider)
 
 
