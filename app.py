@@ -2241,7 +2241,8 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                     {% for vps in vps_list %}
                     <div class="vps-card" data-name="{{ vps['container_name'] }}" data-status="{{ vps['status'] }}" data-id="{{ vps['id'] }}">
                         <div class="vps-card-header">
-                            <span class="vps-name">{{ vps['container_name'] }}</span>
+                            {% if 'node_name' in vps.keys() and vps['node_name'] %}<span style="font-size:10px;color:var(--text-dim);background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;margin-left:6px;">Node: {{ vps['node_name'] }}</span>{% endif %}<span class="vps-name">{{ vps['container_name'] }}</span>{% if 'node_name' in vps.keys() and vps['node_name'] %}<span style="font-size:10px;color:var(--text-dim);background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;">Node: {{ vps['node_name'] }}</span>{% endif %}
+                            {% if vps['node_name'] %}<span class="vps-node-tag">Node: {{ vps['node_name'] }}</span>{% endif %}
                             <div style="display:flex;align-items:center;gap:6px;">
                                 {% if vps['shared_by'] %}
                                 <span style="background:var(--accent);color:#000;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:500;">Shared</span>
@@ -2614,6 +2615,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                 <tr>
                                     <th>User</th>
                                     <th>Name</th>
+                                    <th>Node</th>
                                     <th class="vps-os-col">OS</th>
                                     <th class="vps-specs-col">Specs</th>
                                     <th>Status</th>
@@ -2625,9 +2627,10 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                 <tr>
                                     <td>{{ vps['username'] }}</td>
                                     <td>
-                                        <span class="vps-name">{{ vps['container_name'] }}</span>
+                                        <span class="vps-name">{{ vps['container_name'] }}</span>{% if 'node_name' in vps.keys() and vps['node_name'] %}<span style="font-size:10px;color:var(--text-dim);background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;">Node: {{ vps['node_name'] }}</span>{% endif %}
                                         <span class="vps-detail-mobile">{{ vps['os_type'] }} · {{ vps['ram'] }}/{{ vps['cpu'] }}</span>
                                     </td>
+                                    <td style="font-size:12px;">{{ vps['node_name'] if 'node_name' in vps.keys() and vps['node_name'] else 'not assigned' }}</td>
                                     <td class="vps-os-col">{{ vps['os_type'] }}</td>
                                     <td class="vps-specs-col" style="font-size: 12px;">{{ vps['ram'] }} / {{ vps['cpu'] }}</td>
                                     <td>
@@ -3059,6 +3062,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                 <svg width="18" height="18"><use href="#icon-key"/></svg>
                                 SSHX Access
                             </div>
+                            <p class="text-dim" style="font-size:12px;margin-bottom:8px;">Node: <strong>{{ node_name or 'not assigned' }}</strong></p>
                             {% if vps['ssh_command'] and 'sshx.io' in vps['ssh_command'] %}
                             <p class="text-dim" style="font-size:12px;margin-bottom:8px;">Open this browser link for a terminal. No password or port needed.</p>
                             <div class="ssh-box"><code>{{ vps['ssh_command'] }}</code></div>
@@ -3665,6 +3669,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                 <svg width="18" height="18"><use href="#icon-key"/></svg>
                                 SSHX Access
                             </div>
+                            <p class="text-dim" style="font-size:12px;margin-bottom:8px;">Node: <strong>{{ node_name or 'not assigned' }}</strong></p>
                             {% if vps['ssh_command'] and 'sshx.io' in vps['ssh_command'] %}
                             <p class="text-dim" style="font-size:12px;margin-bottom:8px;">Open this browser link for a terminal. No password or port needed.</p>
                             <div class="ssh-box"><code>{{ vps['ssh_command'] }}</code></div>
@@ -4095,6 +4100,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                 <tr>
                                     <th>User</th>
                                     <th>Name</th>
+                                    <th>Node</th>
                                     <th>OS</th>
                                     <th>Specs</th>
                                     <th>Status</th>
@@ -4106,6 +4112,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                 <tr>
                                     <td>{{ vps['username'] }}</td>
                                     <td class="mono" style="font-size:12px;">{{ vps['container_name'] }}</td>
+                                    <td style="font-size:12px;">{{ vps['node_name'] if 'node_name' in vps.keys() and vps['node_name'] else 'not assigned' }}</td>
                                     <td>{{ vps['os_type'] }}</td>
                                     <td style="font-size:12px;">{{ vps['ram'] }} / {{ vps['cpu'] }}</td>
                                     <td>
@@ -7935,7 +7942,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                                 <tr>
                                     <td class="vps-user">{{ vps['username'] }}</td>
                                     <td>
-                                        <span class="vps-name">{{ vps['container_name'] }}</span>
+                                        <span class="vps-name">{{ vps['container_name'] }}</span>{% if 'node_name' in vps.keys() and vps['node_name'] %}<span style="font-size:10px;color:var(--text-dim);background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.25);padding:2px 7px;border-radius:99px;">Node: {{ vps['node_name'] }}</span>{% endif %}
                                         <span class="vps-detail-mobile">{{ vps['os_type'] }} · {{ vps['ram'] }}/{{ vps['cpu'] }}</span>
                                         <span class="vps-detail-mobile">Exp: {{ vps['expires_at'][:16] if vps['expires_at'] else '—' }}</span>
                                     </td>
@@ -10231,12 +10238,13 @@ def logout():
 @login_required
 def dashboard():
     conn = get_db()
-    user_vps = conn.execute('SELECT *, NULL as shared_by FROM vps WHERE user_id = ?', (session['user_id'],)).fetchall()
+    user_vps = conn.execute('SELECT v.*, n.name AS node_name, NULL as shared_by FROM vps v LEFT JOIN nodes n ON v.node_id = n.id WHERE v.user_id = ?', (session['user_id'],)).fetchall()
     shared_vps = conn.execute("""
-        SELECT v.*, u.username as shared_by
+        SELECT v.*, n.name AS node_name, u.username as shared_by
         FROM vps v
         JOIN vps_shares s ON v.id = s.vps_id
         JOIN users u ON s.shared_by = u.id
+        LEFT JOIN nodes n ON v.node_id = n.id
         WHERE s.shared_with = ?
     """, (session['user_id'],)).fetchall()
     vps_list = list(user_vps) + list(shared_vps)
@@ -10337,7 +10345,7 @@ def vps_detail(vps_id):
                 container_status = lxc_status(vps['container_id'])
             except:
                 container_status = 'not_found'
-    return render_template('vps_detail.html', vps=vps, node_id=(node['id'] if node else ''), container_status=container_status, snapshots=snapshots, shares=shares, shared_by=shared_by, is_owner=is_owner)
+    return render_template('vps_detail.html', vps=vps, node_name=(node['name'] if node else ''), node_id=(node['id'] if node else ''), container_status=container_status, snapshots=snapshots, shares=shares, shared_by=shared_by, is_owner=is_owner)
 terminal_sessions = {}
 @app.route('/vps/<int:vps_id>/terminal')
 @login_required
@@ -10878,7 +10886,7 @@ def kill_process(vps_id):
 def admin_panel():
     conn = get_db()
     users = conn.execute('SELECT * FROM users').fetchall()
-    all_vps = conn.execute('SELECT v.*, u.username FROM vps v JOIN users u ON v.user_id = u.id').fetchall()
+    all_vps = conn.execute('SELECT v.*, u.username, n.name AS node_name FROM vps v JOIN users u ON v.user_id = u.id LEFT JOIN nodes n ON v.node_id = n.id').fetchall()
     nodes = conn.execute('SELECT * FROM nodes ORDER BY is_local DESC, name ASC').fetchall()
     total_users = len(users)
     total_vps = len(all_vps)
@@ -11621,7 +11629,7 @@ def admin_vps_detail(vps_id):
                 container_status = lxc_status(vps['container_id'])
             except:
                 container_status = 'not_found'
-    return render_template('admin_vps_detail.html', vps=vps, vps_os=vps_os, node_id=(node['id'] if node else ''), container_status=container_status, snapshots=snapshots, shares=shares)
+    return render_template('admin_vps_detail.html', vps=vps, vps_os=vps_os, node_name=(node['name'] if node else ''), node_id=(node['id'] if node else ''), container_status=container_status, snapshots=snapshots, shares=shares)
 @app.route('/api/vps/<int:vps_id>/status')
 @login_required
 @limiter.limit(lambda: get_rate_limit('api'))
@@ -11922,7 +11930,7 @@ def unban_user(user_id):
 @admin_required
 def admin_all_vps():
     conn = get_db()
-    all_vps = conn.execute('SELECT v.*, u.username FROM vps v JOIN users u ON v.user_id = u.id ORDER BY v.created_at DESC').fetchall()
+    all_vps = conn.execute('SELECT v.*, u.username, n.name AS node_name FROM vps v JOIN users u ON v.user_id = u.id LEFT JOIN nodes n ON v.node_id = n.id ORDER BY v.created_at DESC').fetchall()
     conn.close()
     return render_template('all_vps.html', vps_list=all_vps)
 @app.route('/os-icons')
@@ -15519,10 +15527,11 @@ app.view_functions["os_icons"] = omega_os_icons_dynamic
 @login_required
 def dashboard_hardened():
     conn = get_db()
-    user_vps = conn.execute("SELECT *, NULL as shared_by FROM vps WHERE user_id = ?", (session["user_id"],)).fetchall()
+    user_vps = conn.execute("SELECT v.*, n.name AS node_name, NULL as shared_by FROM vps v LEFT JOIN nodes n ON v.node_id = n.id WHERE v.user_id = ?", (session["user_id"],)).fetchall()
     shared_vps = conn.execute("""
-        SELECT v.*, u.username as shared_by FROM vps v
+        SELECT v.*, n.name AS node_name, u.username as shared_by FROM vps v
         JOIN vps_shares s ON v.id=s.vps_id JOIN users u ON s.shared_by=u.id
+        LEFT JOIN nodes n ON v.node_id = n.id
         WHERE s.shared_with=?
     """, (session["user_id"],)).fetchall()
     vps_list = list(user_vps) + list(shared_vps)

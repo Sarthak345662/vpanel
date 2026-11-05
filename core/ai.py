@@ -1,9 +1,8 @@
-"""Provider-agnostic AI client for the Vizion hosting panel.
+"""AI client for the Vizion hosting panel.
 
-Only two providers are supported on purpose (the ones the panel admin can
-configure): Google Gemini and xAI Grok. The panel stores the API key in its
-settings table and every AI feature (web assistant, Discord /ask, prefix !ai)
-calls through this module, so a single key change applies everywhere.
+The panel uses xAI Grok only. The key lives in the settings table and every AI
+feature (web assistant, Discord /ask, prefix !ai) calls through this module, so
+one key change applies everywhere.
 """
 from __future__ import annotations
 
@@ -12,18 +11,9 @@ from typing import Iterable
 
 import requests
 
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GROK_ENDPOINT = "https://api.x.ai/v1/chat/completions"
 
 PROVIDERS: dict[str, dict] = {
-    "gemini": {
-        "label": "Google Gemini",
-        "default_model": "gemini-2.5-flash",
-        # Tried in order when the configured model is not available for the key.
-        "fallbacks": ["gemini-2.5-flash", "gemini-3-flash", "gemini-2.0-flash"],
-        "key_url": "https://aistudio.google.com/app/apikey",
-        "key_hint": "AI Studio API key (starts with AIza...)",
-    },
     "grok": {
         "label": "xAI Grok",
         "default_model": "grok-4.7",
@@ -33,11 +23,11 @@ PROVIDERS: dict[str, dict] = {
     },
 }
 
-DEFAULT_PROVIDER = "gemini"
+DEFAULT_PROVIDER = "grok"
 DEFAULT_SYSTEM_PROMPT = (
     "You are the built-in assistant of a Vizion hosting panel (VPS control panel). "
     "Answer short, practical questions about the user's servers, LXC containers, "
-    "KVM/non-KVM virtual machines, nesting, SSH, backups and panel settings. "
+    "KVM/non-KVM virtual machines, nesting, SSHX links, backups and panel settings. "
     "Never invent credentials, node names or IP addresses that are not in the supplied "
     "context. If an action needs administrator rights, say so instead of pretending it "
     "was done. Reply in the language the user writes in."
@@ -54,6 +44,8 @@ def provider_meta(provider: str | None) -> dict:
 
 def provider_slug(provider: str | None) -> str:
     slug = str(provider or "").strip().lower()
+    if slug in {"gemini", "google", "google-gemini"}:
+        return DEFAULT_PROVIDER
     return slug if slug in PROVIDERS else DEFAULT_PROVIDER
 
 
@@ -81,39 +73,6 @@ def _clean_history(history: Iterable[dict] | None, limit: int = 12) -> list[dict
         if content:
             cleaned.append({"role": role, "content": content[:6000]})
     return cleaned[-limit:]
-
-
-def _gemini_call(api_key: str, model: str, system_prompt: str, messages: list[dict],
-                 max_tokens: int, temperature: float, timeout: int) -> str:
-    contents = [
-        {"role": "model" if item["role"] == "assistant" else "user",
-         "parts": [{"text": item["content"]}]}
-        for item in messages
-    ]
-    body = {
-        "contents": contents,
-        "generationConfig": {"maxOutputTokens": int(max_tokens), "temperature": float(temperature)},
-    }
-    if system_prompt:
-        body["system_instruction"] = {"parts": [{"text": system_prompt}]}
-    response = requests.post(
-        GEMINI_ENDPOINT.format(model=model),
-        headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-        json=body,
-        timeout=timeout,
-    )
-    if response.status_code >= 400:
-        raise AIError(_http_error("Gemini", response))
-    data = response.json()
-    candidates = data.get("candidates") or []
-    if not candidates:
-        feedback = (data.get("promptFeedback") or {}).get("blockReason")
-        raise AIError(f"Gemini returned no answer{f' ({feedback})' if feedback else ''}.")
-    parts = ((candidates[0].get("content") or {}).get("parts") or [])
-    text = "".join(str(part.get("text") or "") for part in parts).strip()
-    if not text:
-        raise AIError("Gemini returned an empty answer.")
-    return text
 
 
 def _grok_call(api_key: str, model: str, system_prompt: str, messages: list[dict],
@@ -184,12 +143,8 @@ def chat(provider: str, api_key: str, model: str | None, system_prompt: str,
     last_error: Exception | None = None
     for candidate in model_candidates(provider, model):
         try:
-            if provider == "grok":
-                reply = _grok_call(api_key, candidate, system_prompt, messages,
-                                   max_tokens, temperature, timeout)
-            else:
-                reply = _gemini_call(api_key, candidate, system_prompt, messages,
-                                     max_tokens, temperature, timeout)
+            reply = _grok_call(api_key, candidate, system_prompt, messages,
+                               max_tokens, temperature, timeout)
             return {"reply": reply, "provider": provider, "model": candidate}
         except requests.RequestException as exc:
             raise AIError(f"Could not reach {provider_meta(provider)['label']}: {exc}") from exc
@@ -206,14 +161,14 @@ def chat(provider: str, api_key: str, model: str | None, system_prompt: str,
 def provider_key(settings: dict, provider: str | None = None) -> str:
     settings = dict(settings or {})
     provider = provider_slug(provider or settings.get("ai_provider"))
-    column = "gemini_api_key" if provider == "gemini" else "grok_api_key"
+    column = "grok_api_key"
     return str(settings.get(column) or settings.get("ai_api_key") or "").strip()
 
 
 def provider_model(settings: dict, provider: str | None = None) -> str:
     settings = dict(settings or {})
     provider = provider_slug(provider or settings.get("ai_provider"))
-    column = "gemini_model" if provider == "gemini" else "grok_model"
+    column = "grok_model"
     return str(settings.get(column) or settings.get("ai_model") or "").strip() or default_model(provider)
 
 

@@ -36,7 +36,7 @@ IMAGE_MAGIC = {
 
 SETTINGS_COLUMNS = [
     ("ai_enabled", "INTEGER DEFAULT 1"),
-    ("ai_provider", "TEXT DEFAULT 'gemini'"),
+    ("ai_provider", "TEXT DEFAULT 'grok'"),
     ("ai_api_key", "TEXT DEFAULT ''"),
     ("ai_model", "TEXT DEFAULT ''"),
     ("ai_system_prompt", "TEXT DEFAULT ''"),
@@ -197,7 +197,7 @@ ADMIN_AI_BODY = """
 <div class="x-flash {{ 'success' if cat == 'success' else 'error' }}">{{ msg }}</div>{% endfor %}{% endwith %}
 <div class="x-head">
   <div><h1>AI assistant</h1>
-    <p>Set the Grok and Gemini keys here. The saved key is used by the panel assistant, the Discord <code>/ask</code> command and the <code>!ai</code> prefix command.</p>
+    <p>Set the xAI Grok key here. The saved key is used by the panel assistant, the Discord <code>/ask</code> command and the <code>!ai</code> prefix command.</p>
   </div>
   <span class="x-badge {{ 'ok' if settings['ai_enabled'] else 'off' }}">{{ 'Enabled' if settings['ai_enabled'] else 'Disabled' }}</span>
 </div>
@@ -208,7 +208,6 @@ ADMIN_AI_BODY = """
     <div class="x-row"><span>Active provider</span><span>{{ config.provider_label }}</span></div>
     <div class="x-row"><span>Model</span><span>{{ config.model }}</span></div>
     <div class="x-row"><span>API key</span><span>{% if config.has_key %}<span class="x-badge ok">configured</span>{% else %}<span class="x-badge off">missing</span>{% endif %}</span></div>
-    <div class="x-row"><span>Gemini key</span><span>{{ 'saved' if gemini_saved else 'not set' }}</span></div>
     <div class="x-row"><span>Grok key</span><span>{{ 'saved' if grok_saved else 'not set' }}</span></div>
     <p class="x-note">Keys are stored in the panel database and never printed back. Leave a key field empty to keep the saved value; use the clear checkbox to remove it.</p>
   </div>
@@ -216,13 +215,8 @@ ADMIN_AI_BODY = """
     <h2>Assistant settings</h2>
     <form method="post" action="{{ url_for('ext_admin_ai') }}">
       <div class="x-field"><label>Provider</label>
-        <select class="x-select" name="ai_provider">
-          <option value="gemini" {{ 'selected' if settings['ai_provider'] == 'gemini' }}>Google Gemini</option>
-          <option value="grok" {{ 'selected' if settings['ai_provider'] == 'grok' }}>xAI Grok</option>
-        </select>
-      </div>
-      <div class="x-field"><label>Gemini model</label>
-        <input class="x-input" name="gemini_model" value="{{ settings['gemini_model'] }}" placeholder="gemini-2.5-flash"></div>
+        <input class="x-input" value="xAI Grok" disabled>
+        <input type="hidden" name="ai_provider" value="grok"></div>
       <div class="x-field"><label>Grok model</label>
         <input class="x-input" name="grok_model" value="{{ settings['grok_model'] }}" placeholder="grok-4.7"></div>
       <div class="x-field"><label>Max answer tokens</label>
@@ -238,11 +232,6 @@ ADMIN_AI_BODY = """
   <h2>API keys</h2>
   <form method="post" action="{{ url_for('ext_admin_ai_keys') }}">
     <div class="x-grid">
-      <div class="x-field"><label>Google Gemini API key</label>
-        <input class="x-input" type="password" name="gemini_api_key" autocomplete="off" placeholder="{{ 'saved - leave empty to keep' if gemini_saved else 'AIza...' }}">
-        <label class="x-check" style="margin-top:8px"><input type="checkbox" name="clear_gemini"> Remove saved Gemini key</label>
-        <p class="x-note">Create a key at <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener">Google AI Studio</a>.</p>
-      </div>
       <div class="x-field"><label>xAI Grok API key</label>
         <input class="x-input" type="password" name="grok_api_key" autocomplete="off" placeholder="{{ 'saved - leave empty to keep' if grok_saved else 'xai-...' }}">
         <label class="x-check" style="margin-top:8px"><input type="checkbox" name="clear_grok"> Remove saved Grok key</label>
@@ -545,7 +534,7 @@ AI_PAGE_BODY = """
 <div class="x-card">
   <div class="ai-log" id="ai-log"></div>
   <form class="ai-form" id="ai-form">
-    <textarea id="ai-input" placeholder="Poocho: mera VPS kaise chal raha hai? nesting on kaise karun? KVM se non-KVM me kaise le jaun?"></textarea>
+    <textarea id="ai-input" placeholder="Ask about your VPS: how it is running, how to enable nesting, or how to switch between KVM and non-KVM."></textarea>
     <button class="x-btn" type="submit">Send</button>
   </form>
   <p class="x-note">Provider: {{ ai_provider }} · Model: {{ ai_model }} · {{ 'Admin chat is visible to administrators only.' if is_admin else 'You are using the member chat.' }}</p>
@@ -557,12 +546,12 @@ AI_PAGE_BODY = """
       mode='member', history=[];
   function endpoint(){ return mode==='admin' ? '/ai/admin/chat' : '/ai/chat'; }
   function add(role,text){ var el=document.createElement('div'); el.className='msg '+role; el.textContent=text; logEl.appendChild(el); logEl.scrollTop=logEl.scrollHeight; return el; }
-  function reset(){ logEl.innerHTML=''; history=[]; add('hint', mode==='admin' ? 'Admin chat: poore panel, nodes, saare VPS ka summary.' : 'Member chat: aapke VPS ke baare me poocho.'); }
+  function reset(){ logEl.innerHTML=''; history=[]; add('hint', mode==='admin' ? 'Admin chat: summary of the whole panel, nodes and every VPS.' : 'Member chat: ask anything about your own VPS.'); }
   Array.prototype.forEach.call(tabs, function(tab){ tab.addEventListener('click', function(){ Array.prototype.forEach.call(tabs, function(x){ x.classList.remove('active'); }); tab.classList.add('active'); mode=tab.getAttribute('data-mode'); reset(); }); });
   form.addEventListener('submit', function(event){
     event.preventDefault();
     var text=input.value.trim(); if(!text) return; input.value='';
-    add('user', text); var pending=add('bot','Soch raha hoon...');
+    add('user', text); var pending=add('bot','Thinking…');
     fetch(endpoint(), {method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({message:text, history:history.slice(-10)})})
       .then(function(res){ return res.json().then(function(data){ return {ok:res.ok, data:data}; }); })
@@ -747,9 +736,9 @@ def register_hosting_extensions(app, deps) -> None:
             for name, definition in VPS_COLUMNS:
                 if name not in vps_columns:
                     conn.execute(f"ALTER TABLE vps ADD COLUMN {name} {definition}")
-            conn.execute("UPDATE settings SET ai_provider='gemini' WHERE COALESCE(ai_provider,'')=''")
-            conn.execute("UPDATE settings SET gemini_model=? WHERE COALESCE(gemini_model,'')=''",
-                         (ai.default_model("gemini"),))
+            conn.execute("UPDATE settings SET ai_provider='grok' WHERE COALESCE(ai_provider,'') IN ('','gemini')")
+            conn.execute("UPDATE settings SET grok_model=? WHERE COALESCE(grok_model,'')=''",
+                         (ai.default_model("grok"),))
             conn.execute("UPDATE settings SET grok_model=? WHERE COALESCE(grok_model,'')=''",
                          (ai.default_model("grok"),))
             conn.execute("UPDATE settings SET ai_system_prompt=? WHERE COALESCE(ai_system_prompt,'')=''",
@@ -801,11 +790,10 @@ def register_hosting_extensions(app, deps) -> None:
                 settings_id = row["id"] if row else 1
                 conn.execute(
                     """UPDATE settings SET ai_enabled=?, ai_provider=?, ai_system_prompt=?,
-                              ai_max_tokens=?, gemini_model=?, grok_model=? WHERE id=?""",
+                              ai_max_tokens=?, grok_model=? WHERE id=?""",
                     (1 if request.form.get("ai_enabled") else 0, provider,
                      (request.form.get("ai_system_prompt") or "").strip()[:4000],
                      max_tokens,
-                     (request.form.get("gemini_model") or "").strip()[:120],
                      (request.form.get("grok_model") or "").strip()[:120],
                      settings_id),
                 )
@@ -818,7 +806,6 @@ def register_hosting_extensions(app, deps) -> None:
         config = ai.configured(settings_dict())
         saved = settings_dict()
         return render_template("admin_ai.html", config=config, test_result=None,
-                               gemini_saved=bool(saved.get("gemini_api_key")),
                                grok_saved=bool(saved.get("grok_api_key")))
 
     @app.route("/admin/ai/keys", methods=["POST"])
@@ -829,8 +816,7 @@ def register_hosting_extensions(app, deps) -> None:
         try:
             row = conn.execute("SELECT id FROM settings LIMIT 1").fetchone()
             settings_id = row["id"] if row else 1
-            for column, clear_field in (("gemini_api_key", "clear_gemini"),
-                                        ("grok_api_key", "clear_grok")):
+            for column, clear_field in (("grok_api_key", "clear_grok"),):
                 if request.form.get(clear_field):
                     conn.execute(f"UPDATE settings SET {column}='' WHERE id=?", (settings_id,))
                 value = (request.form.get(column) or "").strip()
@@ -859,7 +845,6 @@ def register_hosting_extensions(app, deps) -> None:
             app.logger.exception("AI test request failed")
             test_result = {"ok": False, "text": f"Unexpected error: {exc}"}
         return render_template("admin_ai.html", config=ai.configured(current), test_result=test_result,
-                               gemini_saved=bool(current.get("gemini_api_key")),
                                grok_saved=bool(current.get("grok_api_key")))
 
     @app.route("/ai/status")
@@ -1349,7 +1334,7 @@ def register_hosting_extensions(app, deps) -> None:
             flash(f"Backend switch failed: {exc}", "error")
             return redirect(url_for("ext_features"))
         labels = {"lxc": "LXC container", "kvm": "KVM ON (VM)", "nonkvm": "KVM OFF (non-KVM)"}
-        flash(f"{vps_row['container_name']} is now a {labels[target]}. Naya IP aur password VPS page par hai.", "success")
+        flash(f"{vps_row['container_name']} is now a {labels[target]}. The new IP and password are shown on the VPS page.", "success")
         return redirect(url_for("ext_features"))
 
     @app.route("/ai")
@@ -1357,10 +1342,12 @@ def register_hosting_extensions(app, deps) -> None:
     def ext_ai_page():
         ensure_schema()
         config = settings_dict()
-        provider = str(config.get("ai_provider") or "gemini").strip().lower()
-        labels = {"gemini": "Google Gemini", "grok": "xAI Grok"}
-        default_model = "grok-4.7" if provider == "grok" else "gemini-2.5-flash"
-        has_key = bool(config.get("gemini_api_key") or config.get("grok_api_key"))
+        provider = str(config.get("ai_provider") or "grok").strip().lower()
+        labels = {"grok": "xAI Grok"}
+        if provider not in labels:
+            provider = "grok"
+        default_model = "grok-4.7"
+        has_key = bool(config.get("grok_api_key"))
         enabled = str(config.get("ai_enabled", "1")).strip().lower() not in {"0", "false", "off", "no"}
         return render_template("ai_chat.html",
                                ai_ready=bool(has_key and enabled),
