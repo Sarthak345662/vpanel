@@ -8087,8 +8087,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-    <script>
-        (function() {
+    <script>        (function() {
             var errorBox = document.getElementById('terminal-error');
             var hintBox = document.getElementById('xterm-hint');
             function showError(msg) {
@@ -8108,6 +8107,19 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                 term.open(document.getElementById('terminal-container'));
                 if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
                 var sessionId = null;
+                var reconnectTimer = null;
+                function showConnected() {
+                    var dot = document.querySelector('#terminal-topbar .tt-status .dot');
+                    var label = document.querySelector('#terminal-topbar .tt-status');
+                    if (dot) { dot.style.background = '#34d399'; dot.style.boxShadow = '0 0 6px #34d399'; }
+                    if (label) label.textContent = 'Connected';
+                }
+                function showDisconnected(msg) {
+                    var dot = document.querySelector('#terminal-topbar .tt-status .dot');
+                    var label = document.querySelector('#terminal-topbar .tt-status');
+                    if (dot) { dot.style.background = '#f87171'; dot.style.boxShadow = '0 0 6px #f87171'; }
+                    if (label) label.textContent = msg ? 'Disconnected' : 'Connecting...';
+                }
                 function sendResize() {
                     if (!sessionId) return;
                     var dims = fitAddon ? fitAddon.proposeDimensions() : null;
@@ -8116,27 +8128,34 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                         .catch(function(e) { console.warn('[omega-terminal] resize failed', e); });
                 }
                 function createSession() {
+                    showDisconnected(false);
                     var dims = fitAddon ? fitAddon.proposeDimensions() : null;
                     var cols = dims ? dims.cols : 80;
                     var rows = dims ? dims.rows : 24;
                     fetch('/api/vps/{{ vps['id'] }}/terminal/session?cols=' + cols + '&rows=' + rows, { method: 'POST' })
                         .then(function(r) { return r.json(); })
                         .then(function(data) {
-                            if (!data || !data.session_id) { showError('Server refused to start a terminal session: ' + (data && data.error ? data.error : 'no session_id')); return; }
+                            if (!data || !data.session_id) { showError('Server refused to start a terminal session: ' + (data && data.error ? data.error : 'no session_id')); showDisconnected(true); return; }
                             sessionId = data.session_id;
+                            showConnected();
                             connectStream();
                             setTimeout(function() { sendResize(); }, 100);
                         })
                         .catch(function(err) {
                             showError('Could not reach the terminal backend: ' + (err && err.message ? err.message : String(err)));
+                            showDisconnected(true);
+                            scheduleReconnect();
                         });
                 }
                 function connectStream() {
                     try {
+                        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
                         var evtSource = new EventSource('/api/vps/{{ vps['id'] }}/terminal/stream?session=' + sessionId);
                         evtSource.onmessage = function(event) {
                             if (event.data === '__TERMINAL_CLOSED__') {
                                 evtSource.close();
+                                showDisconnected(true);
+                                scheduleReconnect();
                                 return;
                             }
                             try {
@@ -8146,8 +8165,27 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                                 term.write(event.data);
                             }
                         };
-                        evtSource.onerror = function() { evtSource.close(); };
-                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); }
+                        evtSource.onerror = function() {
+                            evtSource.close();
+                            showDisconnected(true);
+                            scheduleReconnect();
+                        };
+                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); scheduleReconnect(); }
+                }
+                var reconnectAttempts = 0;
+                var maxReconnectAttempts = 5;
+                function scheduleReconnect() {
+                    if (reconnectAttempts >= maxReconnectAttempts) {
+                        showError('Terminal connection could not be restored. Refresh the page to try again.');
+                        return;
+                    }
+                    reconnectAttempts++;
+                    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000);
+                    showDisconnected(false);
+                    reconnectTimer = setTimeout(function() {
+                        reconnectAttempts++;
+                        createSession();
+                    }, delay);
                 }
                 function sendInput(data) {
                     if (!sessionId || !data) return;
@@ -8172,9 +8210,59 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                 createSession();
             } catch(e) {
                 showError('Terminal failed to initialize: ' + e.message);
+                showDisconnected(true);
+                scheduleReconnect();
             }
-        })();
-    </script>
+        })();</script>
+</body>
+</html>.close();
+                            showDisconnected(true);
+                            scheduleReconnect();
+                        };
+                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); scheduleReconnect(); }
+                }
+                var reconnectAttempts = 0;
+                var maxReconnectAttempts = 5;
+                function scheduleReconnect() {
+                    if (reconnectAttempts >= maxReconnectAttempts) {
+                        showError('Terminal connection could not be restored. Refresh the page to try again.');
+                        return;
+                    }
+                    reconnectAttempts++;
+                    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000);
+                    showDisconnected(false);
+                    reconnectTimer = setTimeout(function() {
+                        reconnectAttempts++;
+                        createSession();
+                    }, delay);
+                }
+                function sendInput(data) {
+                    if (!sessionId || !data) return;
+                    fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
+                        method: 'POST',
+                        body: data
+                    });
+                }
+                term.onData(sendInput);
+                var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
+                document.querySelectorAll('#mobile-keys button').forEach(function(button) {
+                    button.addEventListener('click', function() {
+                        sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
+                        term.focus();
+                    });
+                });
+                function onResize() {
+                    if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
+                    sendResize();
+                }
+                window.addEventListener('resize', onResize);
+                createSession();
+            } catch(e) {
+                showError('Terminal failed to initialize: ' + e.message);
+                showDisconnected(true);
+                scheduleReconnect();
+            }
+        })();</script>
 </body>
 </html>"""}}
 EMBEDDED_CSS = """@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
