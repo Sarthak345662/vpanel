@@ -19,7 +19,7 @@
     ['🐧', 'Creating the container…'],
     ['🌐', 'Bringing networking up…'],
     ['🔐', 'Setting the root password…'],
-    ['🛡️', 'Starting SSH (openssh-server)…'],
+    ['🛡️', 'Starting SSHX (openssh-server)…'],
     ['🚀', 'Almost ready — collecting credentials…']
   ];
   let timer = null;
@@ -90,7 +90,8 @@
   if (window.__omegaActionAnim) return;
   window.__omegaActionAnim = true;
   const ACTIONS = [
-    {re: /fix-ssh|regen-ssh|ssh/i, title: 'Preparing SSH access…', step: 'Setting the root password and opening a public port…'},
+    {re: /\/vps\/\d+\/features/, title: 'Switching the backend…', step: 'Reinstalling the VPS from its image…'},
+    {re: /fix-ssh|regen-ssh|ssh/i, title: 'Preparing SSHX access…', step: 'Setting the root password and opening a public port…'},
     {re: /kvm-access|nesting|toggle/i, title: 'Applying setting…', step: 'Updating the VPS and restarting it…'},
     {re: /restart/i, title: 'Restarting the VPS…', step: 'Services are starting again…'},
     {re: /start/i, title: 'Starting the VPS…', step: 'The container is booting…'},

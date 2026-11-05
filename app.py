@@ -1109,7 +1109,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                 </div>
                 <div class="feature-card">
                     <div class="feature-icon"><svg width="20" height="20" style="color: var(--accent);"><use href="#icon-key"/></svg></div>
-                    <h3>SSH &amp; SSHx</h3>
+                    <h3>SSHX access</h3>
                     <p>Connect via sshx. Browser or terminal.</p>
                 </div>
                 <div class="feature-card">
@@ -3070,12 +3070,12 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                             </div>
                             {% if vps['ssh_command'] %}
                             {% if vps['ssh_password'] %}
-                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;">SSH command:</p>
+                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;">SSHX command:</p>
                             <div class="ssh-box">
                                 <code>{{ vps['ssh_command'] }}</code>
                             </div>
                             <form method="POST" action="{{ url_for('fix_vps_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
-                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Fix SSH access (public IP + port)</button>
+                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Fix SSHX access (public IP + port)</button>
                             </form>
                             <p class="text-dim" style="font-size:12px;margin-bottom:6px;margin-top:6px;">Password: <strong>{{ vps['ssh_password'] }}</strong></p>
                             {% else %}
@@ -3089,7 +3089,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                             </button>
                             {% endif %}
                             {% else %}
-                            <p class="text-dim" style="font-size:13px;">Start the instance to get SSH credentials.</p>
+                            <p class="text-dim" style="font-size:13px;">Start the instance to get SSHX credentials.</p>
                             {% endif %}
                         </div>
 
@@ -3108,7 +3108,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                     <span class="info-value">root</span>
                                 </div>
                                 <div class="info-item">
-                                    <span class="info-label">SSH port</span>
+                                    <span class="info-label">SSHX port</span>
                                     <span class="info-value">22</span>
                                 </div>
                             </div>
@@ -3705,7 +3705,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                             </div>
                             {% if vps['ssh_command'] %}
                             {% if vps['ssh_password'] %}
-                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;">SSH command:</p>
+                            <p class="text-dim" style="font-size:12px;margin-bottom:6px;">SSHX command:</p>
                             <div class="ssh-box">
                                 <code>{{ vps['ssh_command'] }}</code>
                             </div>
@@ -3721,7 +3721,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                             </button>
                             {% endif %}
                             {% else %}
-                            <p class="text-dim" style="font-size:13px;">Start the instance to get SSH credentials.</p>
+                            <p class="text-dim" style="font-size:13px;">Start the instance to get SSHX credentials.</p>
                             {% endif %}
                         </div>
 
@@ -3740,7 +3740,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                     <span class="info-value">root</span>
                                 </div>
                                 <div class="info-item">
-                                    <span class="info-label">SSH port</span>
+                                    <span class="info-label">SSHX port</span>
                                     <span class="info-value">22</span>
                                 </div>
                             </div>
@@ -7102,7 +7102,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                         <span class="method method-post">POST</span>
                         <span class="endpoint-path">/local/api/container/{id}/regen-ssh</span>
                         <span class="auth-badge" style="margin-left:4px;">Admin API Key</span>
-                        <span class="endpoint-desc">Regenerate SSH link</span>
+                        <span class="endpoint-desc">Regenerate SSHX</span>
                     </div>
                     <div class="endpoint-body">
                         <div class="code-block">{
@@ -7441,7 +7441,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                         <span class="method method-post">POST</span>
                         <span class="endpoint-path">/api/container/{id}/regen-ssh</span>
                         <span class="tag tag-public" style="margin-left:4px;">API Key</span>
-                        <span class="endpoint-desc">Regenerate SSH session</span>
+                        <span class="endpoint-desc">Regenerate SSHX session</span>
                     </div>
                     <div class="endpoint-body">
                         <p>Restarts the container and returns a new sshx connection link.</p>
@@ -11302,7 +11302,7 @@ def _refresh_ssh_credentials(vps_row, node):
         raise RuntimeError("Could not set the root password inside the VPS")
     host, port = _ensure_lxc_ssh_access(name)
     if not host or not port:
-        raise RuntimeError("Could not open an SSH port on this node")
+        raise RuntimeError("Could not open an SSHX port on this node")
     return f"ssh root@{host} -p {port}", password
 
 
@@ -11322,15 +11322,15 @@ def regen_ssh(vps_id):
     try:
         command, password = _refresh_ssh_credentials(vps, node)
     except Exception as exc:
-        add_log('error', f"SSH credentials regeneration failed for {vps['container_name']}: {exc}", 'vps')
-        flash(f'Could not regenerate SSH credentials: {exc}', 'error')
+        add_log('error', f"SSHX credentials regeneration failed for {vps['container_name']}: {exc}", 'vps')
+        flash(f'Could not regenerate SSHX credentials: {exc}', 'error')
         return redirect(url_for('vps_detail', vps_id=vps_id))
     conn = get_db()
     conn.execute('UPDATE vps SET ssh_command = ?, ssh_password = ? WHERE id = ?', (command, password, vps_id))
     conn.commit()
     conn.close()
-    add_log('info', f"SSH credentials regenerated for {vps['container_name']}: {command}", 'vps')
-    flash('SSH credentials regenerated: ' + command, 'success')
+    add_log('info', f"SSHX credentials regenerated for {vps['container_name']}: {command}", 'vps')
+    flash('SSHX credentials regenerated: ' + command, 'success')
     return redirect(url_for('vps_detail', vps_id=vps_id))
 @app.route('/admin/vps/<int:vps_id>/regen-ssh', methods=['POST'])
 @admin_required
@@ -11342,15 +11342,15 @@ def admin_regen_ssh(vps_id):
     try:
         command, password = _refresh_ssh_credentials(vps, node)
     except Exception as exc:
-        add_log('error', f"SSH credentials regeneration failed for {vps['container_name']}: {exc}", 'vps')
-        flash(f'Could not regenerate SSH credentials: {exc}', 'error')
+        add_log('error', f"SSHX credentials regeneration failed for {vps['container_name']}: {exc}", 'vps')
+        flash(f'Could not regenerate SSHX credentials: {exc}', 'error')
         return redirect(url_for('admin_vps_detail', vps_id=vps_id))
     conn = get_db()
     conn.execute('UPDATE vps SET ssh_command = ?, ssh_password = ? WHERE id = ?', (command, password, vps_id))
     conn.commit()
     conn.close()
-    add_log('info', f"SSH credentials regenerated for {vps['container_name']}: {command}", 'vps')
-    flash('SSH credentials regenerated: ' + command, 'success')
+    add_log('info', f"SSHX credentials regenerated for {vps['container_name']}: {command}", 'vps')
+    flash('SSHX credentials regenerated: ' + command, 'success')
     return redirect(url_for('admin_vps_detail', vps_id=vps_id))
 @app.route('/vps/<int:vps_id>/delete', methods=['POST'])
 @login_required
@@ -15881,7 +15881,7 @@ def fix_vps_ssh(vps_id):
             return redirect(url_for("vps_detail", vps_id=vps_id))
         host, port = _ensure_lxc_ssh_access(vps_row["container_id"])
         if not host or not port:
-            flash("Could not open an SSH port on this node.", "error")
+            flash("Could not open an SSHX port on this node.", "error")
             return redirect(url_for("vps_detail", vps_id=vps_id))
         command = f"ssh root@{host} -p {port}"
     else:
@@ -15902,8 +15902,8 @@ def fix_vps_ssh(vps_id):
         conn.commit()
     finally:
         conn.close()
-    add_log("info", f"SSH access refreshed for {vps_row['container_name']}: {command}", "vps")
-    flash("SSH access updated.", "success")
+    add_log("info", f"SSHX access refreshed for {vps_row['container_name']}: {command}", "vps")
+    flash("SSHX access updated.", "success")
     return redirect(url_for("vps_detail", vps_id=vps_id))
 
 
