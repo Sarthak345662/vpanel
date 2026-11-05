@@ -710,7 +710,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
         {% if icon %}
         <img src="{{ icon }}" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
         {% else %}
-        <img src="https://files.catbox.moe/wni5n4.png" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
+        <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
         {% endif %}
         {{ settings.site_name if settings else 'Vizion Panel' }}
     </a>
@@ -879,7 +879,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1060,7 +1060,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                 {% if custom_icon %}
                 <img src="{{ custom_icon }}" alt="Icon" style="width:32px;height:32px;border-radius:8px;object-fit:contain;animation:float 3s ease-in-out infinite;">
                 {% else %}
-                <img src="https://files.catbox.moe/wni5n4.png" alt="Icon" style="width:32px;height:32px;border-radius:8px;object-fit:contain;animation:float 3s ease-in-out infinite;">
+                <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:32px;height:32px;border-radius:8px;object-fit:contain;animation:float 3s ease-in-out infinite;">
                 {% endif %}
                 <span style="font-size: 20px; font-weight: 700;">{{ settings.site_name if settings else 'Vizion Panel' }}</span>
             </div>
@@ -1182,7 +1182,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign in — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1384,7 +1384,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         {% if custom_icon %}
                         <img src="{{ custom_icon }}" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
                         {% else %}
-                        <img src="https://files.catbox.moe/wni5n4.png" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
+                        <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
                         {% endif %}
                     </div>
                 </div>
@@ -1439,7 +1439,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Create account — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
@@ -1647,7 +1647,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         {% if custom_icon %}
                         <img src="{{ custom_icon }}" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
                         {% else %}
-                        <img src="https://files.catbox.moe/wni5n4.png" alt="Icon" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
+                        <img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:24px;height:24px;border-radius:6px;object-fit:contain;">
                         {% endif %}
                     </div>
                 </div>
@@ -1720,7 +1720,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
@@ -2432,7 +2432,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Admin — {{ settings.site_name if settings else 'Vizion Panel' }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
 
@@ -2866,7 +2866,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ vps['container_name'] }} — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -3387,7 +3387,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ vps['container_name'] }} — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced {
             background: var(--bg);
@@ -4003,7 +4003,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>All VPS — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -4233,7 +4233,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My Profile — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         .profile-grid{display:grid;grid-template-columns:1fr 1.5fr;gap:16px;margin-bottom:20px}
         .activity-ip-col,.activity-time-col{display:table-cell}
@@ -4431,7 +4431,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Port Forwarding — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -4692,7 +4692,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Panel Settings — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -4954,7 +4954,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Node Management — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -5236,7 +5236,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>System Logs — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         .stat-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
         .stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:16px;display:flex;align-items:center;gap:12px;transition:transform .2s,box-shadow .2s}
@@ -5479,7 +5479,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Users — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -5704,7 +5704,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Manager — {{ vps['container_name'] }}</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         .file-path { display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:12px;font-size:12px; }
@@ -5929,7 +5929,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Process Manager — {{ vps['container_name'] }}</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         .proc-bar { height:4px;border-radius:2px;background:var(--border);overflow:hidden; }
@@ -6026,7 +6026,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Notifications — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -6156,7 +6156,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vizion Panel</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -6245,7 +6245,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vizion Panel</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -6326,7 +6326,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vizion Panel</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
@@ -6441,7 +6441,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>System Info — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
 .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative;transition:transform .2s,box-shadow .2s,border-color .2s}
@@ -6646,7 +6646,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OS Icons — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
 </head>
 <body>
     {% include 'icons.html' %}
@@ -6720,7 +6720,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>API Docs — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         .page-advanced{background:var(--bg);background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(255,255,255,.03),transparent);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative}
@@ -7676,7 +7676,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>User Usage Report — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         .page-advanced{background:var(--bg);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative}
@@ -7885,7 +7885,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Expiring VPS — Vizion Panel</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <style>
         .page-advanced{background:var(--bg);min-height:100vh}
         .card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:20px;position:relative}
@@ -8054,7 +8054,7 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ vps['container_name'] }} &mdash; Terminal</title>
-    <link rel="icon" href="{{ custom_icon if custom_icon else 'https://files.catbox.moe/wni5n4.png' }}">
+    <link rel="icon" href="{{ custom_icon if custom_icon else '/static/img/vizion-logo.svg' }}">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -16010,6 +16010,17 @@ async def _omega_bot_start_async(token):
     intents.members = False
     client = discord.Client(intents=intents)
     tree = app_commands.CommandTree(client)
+    _tree_add_command = tree.add_command
+
+    def _tree_add_unique(command, **kwargs):
+        existing = {getattr(item, "name", "") for item in tree.get_commands()}
+        if getattr(command, "name", "") in existing:
+            app.logger.warning("Discord command /%s already registered; skipping duplicate",
+                               getattr(command, "name", "?"))
+            return None
+        return _tree_add_command(command, **kwargs)
+
+    tree.add_command = _tree_add_unique
 
     # Load .env beside app.py when python-dotenv is installed. The bot also
     # supports variables injected directly by the process manager.
@@ -16529,35 +16540,6 @@ async def _omega_bot_start_async(token):
             app.logger.exception("Discord prefix command failed: %s", command)
             await reply(f"Command failed: `{str(exc)[:300]}`")
 
-    # Full command pack: VPS, invite/boost, admin, main-admin, ports and system
-    # commands, slash + prefix. Registered before the first tree sync.
-    try:
-        from core.bot_commands import register_bot_commands as _register_bot_pack
-        _register_bot_pack(
-            client=client, tree=tree, discord=discord, app_commands=app_commands,
-            helpers={
-                "get_db": get_db,
-                "get_settings": get_settings,
-                "add_log": add_log,
-                "log_activity": log_activity,
-                "create_vps_for_user": _create_vps_for_user,
-                "get_node_for_vps": get_node_for_vps,
-                "lxc_start": lxc_start,
-                "lxc_stop": lxc_stop,
-                "lxc_restart": lxc_restart,
-                "lxc_destroy": lxc_destroy,
-                "lxc_attach": lxc_attach,
-                "call_node_api": call_node_api,
-                "panel_url": lambda: str(_omega_settings_dict().get("panel_public_url") or ""),
-                "load_bot_admins": load_bot_admins,
-                "save_bot_admins": save_bot_admins,
-                "bot_uptime": lambda: time.time() - OMEGA_PROCESS_STARTED_AT,
-                "prefix_enabled": lambda: bool(OMEGA_BOT_PREFIX_ENABLED),
-                "logger": app.logger,
-            },
-        )
-    except Exception:
-        app.logger.exception("Discord command pack could not be registered")
 
     @tree.command(name="uptime", description="Create a live node status message in a channel")
     @app_commands.describe(
@@ -16630,6 +16612,36 @@ async def _omega_bot_start_async(token):
         except Exception as exc:
             app.logger.exception("Could not change Discord live status state")
             await interaction.followup.send(f"❌ Could not update status: `{str(exc)[:250]}`", ephemeral=True)
+
+    # Full command pack: VPS, invite/boost, admin, main-admin, ports and system
+    # commands, slash + prefix. Registered before the first tree sync.
+    try:
+        from core.bot_commands import register_bot_commands as _register_bot_pack
+        _register_bot_pack(
+            client=client, tree=tree, discord=discord, app_commands=app_commands,
+            helpers={
+                "get_db": get_db,
+                "get_settings": get_settings,
+                "add_log": add_log,
+                "log_activity": log_activity,
+                "create_vps_for_user": _create_vps_for_user,
+                "get_node_for_vps": get_node_for_vps,
+                "lxc_start": lxc_start,
+                "lxc_stop": lxc_stop,
+                "lxc_restart": lxc_restart,
+                "lxc_destroy": lxc_destroy,
+                "lxc_attach": lxc_attach,
+                "call_node_api": call_node_api,
+                "panel_url": lambda: str(_omega_settings_dict().get("panel_public_url") or ""),
+                "load_bot_admins": load_bot_admins,
+                "save_bot_admins": save_bot_admins,
+                "bot_uptime": lambda: time.time() - OMEGA_PROCESS_STARTED_AT,
+                "prefix_enabled": lambda: bool(OMEGA_BOT_PREFIX_ENABLED),
+                "logger": app.logger,
+            },
+        )
+    except Exception:
+        app.logger.exception("Discord command pack could not be registered")
 
     @tasks.loop(seconds=5)
     async def live_status_scheduler():

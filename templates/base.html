@@ -8,7 +8,7 @@
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">Ω</div><div><b>Vizion Panel</b><small>V4 Stable</small></div></div>
+    <div class="brand"><div class="brand-mark"><img src="{{ settings.logo_url if settings and settings.logo_url else '/static/img/vizion-logo.svg' }}" alt="Logo" style="width:100%;height:100%;object-fit:contain;border-radius:10px;"></div><div><b>Vizion Panel</b><small>V4 Stable</small></div></div>
     {% if session.get('uid') %}
     <nav>
       <a class="nav-link" href="{{ url_for('dashboard') }}">▦ <span>{{ _('dashboard') }}</span></a>
