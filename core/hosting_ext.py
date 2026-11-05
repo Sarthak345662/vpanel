@@ -197,7 +197,7 @@ ADMIN_AI_BODY = """
   </div>
   <span class="x-badge {{ 'ok' if settings['ai_enabled'] else 'off' }}">{{ 'Enabled' if settings['ai_enabled'] else 'Disabled' }}</span>
 </div>
-<div class="x-flash success" style="margin-bottom:14px">Use: yahan key save karo, phir har page ke bottom-right <b>&#10022;</b> button, Discord <code>/ask</code> ya <code>!ai</code> usi key se chalega.</div>
+<div class="x-flash success" style="margin-bottom:14px">Save the key here; then the <b>&#10022;</b> button at the bottom-right of every page, Discord <code>/ask</code> and <code>!ai</code> all use it.</div>
 <div class="x-grid">
   <div class="x-card">
     <h2>Provider status</h2>
@@ -447,14 +447,14 @@ FEATURES_BODY = """
 <div class="x-flash {{ 'success' if cat == 'success' else 'error' }}">{{ msg }}</div>{% endfor %}{% endwith %}
 <div class="x-head">
   <div><h1>VPS switches</h1>
-    <p>KVM ON = hardware-accelerated VM, KVM OFF = Non-KVM (QEMU TCG) VM, LXC = container. Backend badalne par VPS usi OS image se reinstall hota hai, isliye data delete hota hai - "wipe + reinstall" tick karna zaroori hai. Nesting turant set hota hai (nested Docker ke liye ek restart).</p>
+    <p>KVM ON = hardware-accelerated VM, KVM OFF = Non-KVM (QEMU TCG) VM, LXC = container. Switching the backend reinstalls the VPS from the same OS image, so its data is deleted - tick "wipe + reinstall" to confirm. Nesting and KVM access apply immediately and the VPS is restarted once. Docker note: KVM access needs <code>--device=/dev/kvm</code> and nesting needs <code>--privileged</code> at <code>docker run</code> time; Docker flags cannot be removed later, the container has to be recreated.</p>
   </div>
   <span class="x-badge {{ 'ok' if kvm_available else 'warn' }}">{{ 'KVM available' if kvm_available else 'KVM unavailable on host' }}</span>
 </div>
 <div class="x-card">
   <h2>Your VPS</h2>
   <div class="x-tablewrap"><table class="x-table">
-    <thead><tr><th>ID</th><th>Name</th><th>Backend</th><th>Status</th><th>Switch backend</th><th>Nesting</th></tr></thead>
+    <thead><tr><th>ID</th><th>Name</th><th>Backend</th><th>Status</th><th>Switch backend</th><th>Nesting</th><th>KVM access</th></tr></thead>
     <tbody>
     {% for v in vps_list %}
       <tr>
@@ -481,13 +481,26 @@ FEATURES_BODY = """
             <button class="x-btn" type="submit">{{ 'Turn OFF' if v['nesting'] else 'Turn ON' }}</button>
           </form>
         </td>
+        <td>
+          {% if v['vps_type'] == 'nonkvm' %}
+            <span class="x-badge off">n/a</span>
+          {% elif session.get('is_admin') %}
+            <form method="post" action="{{ url_for('ext_vps_kvm_access', vps_id=v['id']) }}" style="display:flex;gap:8px;align-items:center">
+              <input type="hidden" name="enabled" value="{{ 0 if kvm_map.get(v['id']) else 1 }}">
+              <span class="x-badge {{ 'ok' if kvm_map.get(v['id']) else 'off' }}">{{ 'ON' if kvm_map.get(v['id']) else 'OFF' }}</span>
+              <button class="x-btn" type="submit">{{ 'Turn OFF' if kvm_map.get(v['id']) else 'Turn ON' }}</button>
+            </form>
+          {% else %}
+            <span class="x-badge {{ 'ok' if kvm_map.get(v['id']) else 'off' }}">{{ 'ON' if kvm_map.get(v['id']) else 'OFF' }}</span>
+          {% endif %}
+        </td>
       </tr>
     {% else %}
-      <tr><td colspan="6">No VPS assigned to you yet.</td></tr>
+      <tr><td colspan="7">No VPS assigned to you yet.</td></tr>
     {% endfor %}
     </tbody>
   </table></div>
-  <p class="x-note">LXC se VM aur VM se LXC conversion bhi isi switch se hota hai. OS alias same rehta hai; naya disk, IP aur password milta hai.</p>
+  <p class="x-note">LXC-to-VM and VM-to-LXC conversion uses the same backend switch. The OS alias stays the same; the VPS gets a new disk, IP and root password. Only an administrator can turn KVM access on or off.</p>
 </div>
 """
 
@@ -495,7 +508,7 @@ FEATURES_BODY = """
 AI_PAGE_BODY = """
 <div class="x-head">
   <div><h1>AI chat</h1>
-    <p>Member chat aapke VPS ke baare me jawab deta hai. Admin chat poore panel, nodes aur saare VPS ka overview deta hai - dono ke apne alag chat hain.</p>
+    <p>Member chat answers questions about your own VPS. Admin chat covers the whole panel, nodes and every VPS - each has its own separate history.</p>
   </div>
   <span class="x-badge {{ 'ok' if ai_ready else 'off' }}">{{ 'AI ready' if ai_ready else 'Add an API key in AI Settings' }}</span>
 </div>
@@ -511,7 +524,7 @@ AI_PAGE_BODY = """
     <textarea id="ai-input" placeholder="Poocho: mera VPS kaise chal raha hai? nesting on kaise karun? KVM se non-KVM me kaise le jaun?"></textarea>
     <button class="x-btn" type="submit">Send</button>
   </form>
-  <p class="x-note">Provider: {{ ai_provider }} · Model: {{ ai_model }} · {{ 'Admin chat sirf admins ko dikhta hai.' if is_admin else 'Aapko member chat milta hai.' }}</p>
+  <p class="x-note">Provider: {{ ai_provider }} · Model: {{ ai_model }} · {{ 'Admin chat is visible to administrators only.' if is_admin else 'You are using the member chat.' }}</p>
 </div>
 <script>
 (function(){
@@ -530,7 +543,7 @@ AI_PAGE_BODY = """
         body: JSON.stringify({message:text, history:history.slice(-10)})})
       .then(function(res){ return res.json().then(function(data){ return {ok:res.ok, data:data}; }); })
       .then(function(out){
-        pending.textContent = out.data.reply || out.data.error || 'Koi jawab nahi mila.';
+        pending.textContent = out.data.reply || out.data.error || 'No reply was returned.';
         if (out.ok && out.data.reply) { history.push({role:'user',content:text}); history.push({role:'assistant',content:out.data.reply}); }
       })
       .catch(function(err){ pending.textContent='AI request failed: '+err; });
@@ -987,7 +1000,7 @@ def register_hosting_extensions(app, deps) -> None:
     def ext_admin_create_typed_vps():
         ensure_schema()
         if request.method != "POST":
-            flash("VPS banane ke liye form ka create button dabao.", "info")
+            flash("Use the create button on the form to add a VPS.", "info")
             return redirect(url_for("ext_admin_vps_types"))
         try:
             user_id = int(request.form.get("user_id") or 0)
@@ -1114,6 +1127,11 @@ def register_hosting_extensions(app, deps) -> None:
             finally:
                 conn.close()
             add_log("info", f"Nesting {'enabled' if enabled else 'disabled'} on {vps_row['container_name']}", "vps")
+            if message is not None and (node is None or node["is_local"]):
+                restarted, restart_out = vps_types.action(container_id, vps_type, "restart")
+                message = ((message or "Nesting updated") +
+                           (" and the VPS was restarted" if restarted else
+                            f" but the restart failed: {restart_out}"))
         if request.is_json or request.args.get("format") == "json":
             return jsonify({"ok": ok, "nesting": enabled, "message": message})
         flash(("Nesting " + ("enabled" if enabled else "disabled") + " on " + str(vps_row["container_name"])
@@ -1184,6 +1202,30 @@ def register_hosting_extensions(app, deps) -> None:
             conn.close()
         add_log("warning", f"VPS {name} moved to the {target_type} backend (reinstalled from image)", "vps")
 
+    @app.route("/vps/<int:vps_id>/kvm-access", methods=["POST"])
+    @admin_required
+    def ext_vps_kvm_access(vps_id):
+        """Attach or remove /dev/kvm inside an instance, then restart it."""
+        ensure_schema()
+        vps_row, node = get_node_for_vps(vps_id)
+        if not vps_row:
+            flash("VPS not found.", "error")
+            return redirect(url_for("ext_features"))
+        vps_type = vps_row["vps_type"] if "vps_type" in vps_row.keys() else "lxc"
+        container_id = vps_row["container_id"] or vps_row["container_name"]
+        enabled = str(request.form.get("enabled", "")).strip().lower() in {"1", "true", "on", "yes"}
+        if node and not node["is_local"]:
+            flash("KVM access can only be changed from the node that runs this VPS.", "error")
+            return redirect(url_for("ext_features"))
+        ok, message = vps_types.kvm_access(container_id, vps_type, enabled)
+        if ok:
+            restarted, restart_out = vps_types.action(container_id, vps_type, "restart")
+            message = message + ("" if restarted else f" (restart failed: {restart_out})")
+            add_log("info", f"KVM access {'enabled' if enabled else 'disabled'} on {vps_row['container_name']}", "vps")
+        flash(message or ("KVM access updated" if ok else "Could not change KVM access"),
+              "success" if ok else "error")
+        return redirect(url_for("ext_features"))
+
     @app.route("/features")
     @login_required
     def ext_features():
@@ -1198,9 +1240,19 @@ def register_hosting_extensions(app, deps) -> None:
             ).fetchall()
         finally:
             conn.close()
+        kvm_map = {}
+        for row in rows:
+            if (row["vps_type"] or "lxc") == "nonkvm":
+                kvm_map[row["id"]] = False
+                continue
+            try:
+                kvm_map[row["id"]] = vps_types.kvm_access_state(row["container_name"], row["vps_type"])
+            except Exception:
+                kvm_map[row["id"]] = False
         return render_template("features.html", vps_list=rows,
                                type_labels={"lxc": "LXC container", "kvm": "KVM VM",
                                             "nonkvm": "Non-KVM VM"},
+                               kvm_map=kvm_map,
                                kvm_available=vps_types.capabilities()["kvm"])
 
     @app.route("/vps/<int:vps_id>/features", methods=["POST"])
@@ -1233,7 +1285,7 @@ def register_hosting_extensions(app, deps) -> None:
             flash("KVM is already " + ("ON" if enabled else "OFF") + " for this VPS.", "success")
             return redirect(url_for("ext_features"))
         if not request.form.get("confirm"):
-            flash("KVM switch VPS ko image se reinstall karta hai (data delete). Pehle 'wipe + reinstall' tick karo.", "error")
+            flash("Switching the backend reinstalls the VPS from its image and deletes its data. Tick \"wipe + reinstall\" first.", "error")
             return redirect(url_for("ext_features"))
         try:
             _migrate_backend(vps_row, node, target)

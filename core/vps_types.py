@@ -212,6 +212,11 @@ def create_instance(name: str, image_alias: str, vps_type: str = DEFAULT_TYPE,
         _run([binary, "delete", name, "--force"], timeout=60)
         args[2] = str(image_alias)
         code, output = _run(args, timeout=900)
+    if code != 0 and "exists" in output.lower():
+        # A previous switch can leave the old instance (or a half-created one)
+        # behind; remove it and retry the launch once.
+        _run([binary, "delete", name, "--force"], timeout=300)
+        code, output = _run(args, timeout=900)
     if code != 0:
         # A failed launch can leave a half-created instance behind.
         _run([binary, "delete", name, "--force"], timeout=60)
@@ -287,10 +292,42 @@ def remove(name: str, vps_type: str) -> tuple[bool, str]:
     if not binary:
         return False, "Incus/LXD CLI is not installed on this node."
     code, output = _run([binary, "delete", name, "--force"], timeout=300)
-    if code != 0 and "not found" in output.lower():
+    lowered = output.lower()
+    if code != 0 and ("not found" in lowered or "does not exist" in lowered or "no such" in lowered):
         # Already gone (for example after an earlier failed backend switch).
         return True, "Instance was already removed."
     return code == 0, output[-800:]
+
+
+def kvm_access_state(name: str, vps_type: str = DEFAULT_TYPE) -> bool:
+    """True when /dev/kvm is passed into the instance as a unix-char device."""
+    if normalise_type(vps_type) == "nonkvm":
+        return False
+    binary = cli()
+    if not binary:
+        return False
+    code, output = _run([binary, "config", "device", "list", name], timeout=30)
+    return code == 0 and "kvm" in output.lower() and "/dev/kvm" in output
+
+
+def kvm_access(name: str, vps_type: str, enabled: bool) -> tuple[bool, str]:
+    """Attach or detach /dev/kvm inside the instance (KVM access for nested VMs)."""
+    vps_type = normalise_type(vps_type)
+    if vps_type == "nonkvm":
+        return False, "KVM access is not available on the non-KVM backend."
+    binary = cli()
+    if not binary:
+        return False, "Incus/LXD CLI is not installed on this node."
+    if enabled:
+        code, output = _run([binary, "config", "device", "add", name, "kvm",
+                             "unix-char", "path=/dev/kvm"], timeout=60)
+        if code != 0 and "already exists" not in output.lower():
+            return False, output[-800:] or "Could not attach /dev/kvm"
+        return True, "KVM access enabled"
+    code, output = _run([binary, "config", "device", "remove", name, "kvm"], timeout=60)
+    if code != 0 and ("not found" in output.lower() or "does not exist" in output.lower()):
+        return True, "KVM access was already disabled"
+    return code == 0, (output[-800:] or "KVM access disabled")
 
 
 def instance_ip(name: str, vps_type: str) -> str:

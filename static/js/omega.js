@@ -90,10 +90,11 @@
   if (window.__omegaActionAnim) return;
   window.__omegaActionAnim = true;
   const ACTIONS = [
-    {re: /fix-ssh|regen-ssh|ssh/i, title: 'SSH connect ho raha hai…', step: 'Password + public port set ho rahe hain…'},
-    {re: /restart/i, title: 'VPS restart ho raha hai…', step: 'Services dobara start ho rahe hain…'},
-    {re: /start/i, title: 'VPS start ho raha hai…', step: 'Container boot ho raha hai…'},
-    {re: /stop|shutdown/i, title: 'VPS stop ho raha hai…', step: 'Processes band kiye ja rahe hain…'}
+    {re: /fix-ssh|regen-ssh|ssh/i, title: 'Preparing SSH access…', step: 'Setting the root password and opening a public port…'},
+    {re: /kvm-access|nesting|toggle/i, title: 'Applying setting…', step: 'Updating the VPS and restarting it…'},
+    {re: /restart/i, title: 'Restarting the VPS…', step: 'Services are starting again…'},
+    {re: /start/i, title: 'Starting the VPS…', step: 'The container is booting…'},
+    {re: /stop|shutdown/i, title: 'Stopping the VPS…', step: 'Shutting the processes down…'}
   ];
   function match(url){
     url = (url || '').toLowerCase();

@@ -11280,6 +11280,31 @@ def restart_vps(vps_id):
     except Exception as e:
         flash(f"Error restarting VPS: {str(e)}", 'error')
     return redirect(url_for('vps_detail', vps_id=vps_id))
+def _refresh_ssh_credentials(vps_row, node):
+    """New root password plus a public SSH port that really accepts TCP."""
+    name = vps_row["container_id"] or vps_row["container_name"]
+    password = secrets.token_urlsafe(18)
+    if not node["is_local"]:
+        result, code = call_node_api(node["node_url"], node["api_key"],
+                                     f"/api/container/{name}/regen-ssh", method="POST",
+                                     data={"method": "password"}, timeout=120)
+        command = (result or {}).get("ssh_command") or ""
+        password = (result or {}).get("password") or password
+        if code not in (200, 201, 202) or not command:
+            raise RuntimeError((result or {}).get("error") or "The node could not prepare SSH access")
+        return command, password
+    if lxc_status(name) != "running":
+        lxc_start(name)
+        lxc_wait_running(name, timeout=150)
+    ok, _output = lxc_set_root_password(name, password)
+    if not ok:
+        raise RuntimeError("Could not set the root password inside the VPS")
+    host, port = _ensure_lxc_ssh_access(name)
+    if not host or not port:
+        raise RuntimeError("Could not open an SSH port on this node")
+    return f"ssh root@{host} -p {port}", password
+
+
 @app.route('/vps/<int:vps_id>/regen-ssh', methods=['POST'])
 @login_required
 def regen_ssh(vps_id):
@@ -11293,45 +11318,18 @@ def regen_ssh(vps_id):
     if vps['user_id'] != session['user_id'] and not is_shared and not session.get('is_admin'):
         flash('VPS not found', 'error')
         return redirect(url_for('dashboard'))
-    ssh_session_line = None
-    ssh_password_val = None
     try:
-        if node['is_local']:
-            if lxc_status(vps['container_id']) != 'running':
-                lxc_start(vps['container_id'])
-                time.sleep(2)
-            try:
-                lxc_attach(vps['container_id'], 'pkill sshx')
-                time.sleep(1)
-            except:
-                pass
-            lxc_attach(vps['container_id'], 'command -v sshx >/dev/null 2>&1 || curl -sSf https://sshx.io/get | sh', timeout=60)
-            exit_code, output = lxc_attach(vps['container_id'], 'nohup sshx > /tmp/sshx_output.log 2>&1 & sleep 10; cat /tmp/sshx_output.log 2>/dev/null')
-            if isinstance(output, bytes):
-                output = output.decode('utf-8', errors='ignore')
-            for line in str(output).split('\n'):
-                decoded = strip_ansi(line.strip())
-                if 'sshx.io' in decoded:
-                    match = re.search('https://sshx\\.io/s/[a-zA-Z0-9#]+', decoded)
-                    if match:
-                        ssh_session_line = match.group(0)
-                        break
-        else:
-            resp, code = call_node_api(node['node_url'], node['api_key'], f"/api/container/{vps['container_id']}/regen-ssh", method='POST', data={'method': 'sshx'})
-            if code != 200 or resp.get('error'):
-                raise Exception(resp.get('error', 'Failed on remote node'))
-            ssh_session_line = resp.get('ssh_command')
-            ssh_password_val = resp.get('password')
-        if ssh_session_line:
-            conn = get_db()
-            conn.execute('UPDATE vps SET ssh_command = ?, ssh_password = ? WHERE id = ?', (ssh_session_line, ssh_password_val, vps_id))
-            conn.commit()
-            conn.close()
-            flash('SSH credentials regenerated', 'success')
-        else:
-            flash('Failed to regenerate SSH credentials', 'error')
-    except Exception as e:
-        flash(f"Error regenerating SSH: {str(e)}", 'error')
+        command, password = _refresh_ssh_credentials(vps, node)
+    except Exception as exc:
+        add_log('error', f"SSH credentials regeneration failed for {vps['container_name']}: {exc}", 'vps')
+        flash(f'Could not regenerate SSH credentials: {exc}', 'error')
+        return redirect(url_for('vps_detail', vps_id=vps_id))
+    conn = get_db()
+    conn.execute('UPDATE vps SET ssh_command = ?, ssh_password = ? WHERE id = ?', (command, password, vps_id))
+    conn.commit()
+    conn.close()
+    add_log('info', f"SSH credentials regenerated for {vps['container_name']}: {command}", 'vps')
+    flash('SSH credentials regenerated: ' + command, 'success')
     return redirect(url_for('vps_detail', vps_id=vps_id))
 @app.route('/admin/vps/<int:vps_id>/regen-ssh', methods=['POST'])
 @admin_required
@@ -11340,45 +11338,18 @@ def admin_regen_ssh(vps_id):
     if not vps:
         flash('VPS not found', 'error')
         return redirect(url_for('admin_all_vps'))
-    ssh_session_line = None
-    ssh_password_val = None
     try:
-        if node['is_local']:
-            if lxc_status(vps['container_id']) != 'running':
-                lxc_start(vps['container_id'])
-                time.sleep(2)
-            try:
-                lxc_attach(vps['container_id'], 'pkill sshx')
-                time.sleep(1)
-            except:
-                pass
-            lxc_attach(vps['container_id'], 'command -v sshx >/dev/null 2>&1 || curl -sSf https://sshx.io/get | sh', timeout=60)
-            exit_code, output = lxc_attach(vps['container_id'], 'nohup sshx > /tmp/sshx_output.log 2>&1 & sleep 10; cat /tmp/sshx_output.log 2>/dev/null')
-            if isinstance(output, bytes):
-                output = output.decode('utf-8', errors='ignore')
-            for line in str(output).split('\n'):
-                decoded = strip_ansi(line.strip())
-                if 'sshx.io' in decoded:
-                    match = re.search('https://sshx\\.io/s/[a-zA-Z0-9#]+', decoded)
-                    if match:
-                        ssh_session_line = match.group(0)
-                        break
-        else:
-            resp, code = call_node_api(node['node_url'], node['api_key'], f"/api/container/{vps['container_id']}/regen-ssh", method='POST', data={'method': 'sshx'})
-            if code != 200 or resp.get('error'):
-                raise Exception(resp.get('error', 'Failed on remote node'))
-            ssh_session_line = resp.get('ssh_command')
-            ssh_password_val = resp.get('password')
-        if ssh_session_line:
-            conn = get_db()
-            conn.execute('UPDATE vps SET ssh_command = ?, ssh_password = ? WHERE id = ?', (ssh_session_line, ssh_password_val, vps_id))
-            conn.commit()
-            conn.close()
-            flash('SSH credentials regenerated', 'success')
-        else:
-            flash('Failed to regenerate SSH credentials', 'error')
-    except Exception as e:
-        flash(f"Error regenerating SSH: {str(e)}", 'error')
+        command, password = _refresh_ssh_credentials(vps, node)
+    except Exception as exc:
+        add_log('error', f"SSH credentials regeneration failed for {vps['container_name']}: {exc}", 'vps')
+        flash(f'Could not regenerate SSH credentials: {exc}', 'error')
+        return redirect(url_for('admin_vps_detail', vps_id=vps_id))
+    conn = get_db()
+    conn.execute('UPDATE vps SET ssh_command = ?, ssh_password = ? WHERE id = ?', (command, password, vps_id))
+    conn.commit()
+    conn.close()
+    add_log('info', f"SSH credentials regenerated for {vps['container_name']}: {command}", 'vps')
+    flash('SSH credentials regenerated: ' + command, 'success')
     return redirect(url_for('admin_vps_detail', vps_id=vps_id))
 @app.route('/vps/<int:vps_id>/delete', methods=['POST'])
 @login_required
@@ -13727,8 +13698,8 @@ def _create_vps_for_user(user, data):
             if vps_type == "lxc":
                 if not _vps_types.capabilities()["incus"]:
                     raise RuntimeError(
-                        "Is node par Incus/LXD install nahi hai. Node par 'sudo bash omega.sh --install' "
-                        "chalao ya kisi doosre node ko select karo."
+                        "Incus/LXD is not installed on this node. Run 'sudo bash omega.sh --install' "
+                        "on it, or select a different node."
                     )
                 container_id = lxc_create(name, os_type, ram, cpu, disk)
             else:
@@ -13893,7 +13864,7 @@ def _provision_existing_panel_vps(user, vps_id, container_id, container_name, no
 
 def _admin_create_vps_with_notifications():
     if request.method != "POST":
-        flash("VPS banane ke liye form ka Deploy VPS button dabao.", "info")
+        flash("Use the Deploy VPS button on the form to create a VPS.", "info")
         return redirect(url_for("admin_panel"))
     if "user_id" not in session:
         flash("Please login first", "error")
@@ -14197,7 +14168,8 @@ EMBEDDED_TEMPLATES["bot_settings.html"] = """<!doctype html><html lang="en"><hea
 <title>Bot Settings - Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"></head>
 <body><main class="page" style="max-width:760px;margin:5vh auto;padding:24px">
 <h1>Bot Settings</h1><p>Configure the companion bot and panel banner.</p>
-<p><strong>Bot status:</strong> {% if bot_status.connected %}online as {{ bot_status.user }}{% elif bot_status.thread %}connecting…{% else %}offline (worker not running){% endif %}{% if bot_status.error %} · last error: <code>{{ bot_status.error }}</code>{% endif %}</p>
+<p><strong>Bot status:</strong> {% if bot_status.connected %}online as {{ bot_status.user }}{% elif bot_status.worker %}worker running, connecting…{% else %}offline - the bot worker is not running. Start it with <code>sudo systemctl restart omega-bot</code>{% endif %}{% if bot_status.pid %} · worker pid {{ bot_status.pid }}{% endif %}{% if bot_status.error %} · last error: <code>{{ bot_status.error }}</code>{% endif %}</p>
+<p class="hint">The Discord bot runs in the separate omega-bot service. A new token is picked up within 15 seconds; use Restart bot to reconnect immediately.</p>
 <form method="post" action="{{ url_for('admin_bot_restart') }}" style="margin:10px 0 18px"><button class="btn btn-primary" type="submit">Restart bot</button></form>
 <form method="post" enctype="multipart/form-data">
 <label>Discord Bot Prefix</label><input class="form-control" name="bot_prefix" value="{{ settings['bot_prefix'] or '!' }}" maxlength="5" required>
@@ -14904,6 +14876,10 @@ def omega_start_background_workers():
     if not any(t.name == "omega-discord-bot" and t.is_alive() for t in threading.enumerate()):
         OMEGA_BOT_THREAD = threading.Thread(target=omega_discord_bot_thread, name="omega-discord-bot", daemon=True)
         OMEGA_BOT_THREAD.start()
+    if not any(t.name == "omega-bot-heartbeat" and t.is_alive() for t in threading.enumerate()):
+        threading.Thread(target=_omega_bot_heartbeat, name="omega-bot-heartbeat", daemon=True).start()
+    if not any(t.name == "omega-bot-restart-watch" and t.is_alive() for t in threading.enumerate()):
+        threading.Thread(target=_omega_bot_watch_restart, name="omega-bot-restart-watch", daemon=True).start()
 
 
 # Dynamic Incus aliases are also accepted by the existing create helper.
@@ -16706,6 +16682,7 @@ async def _omega_bot_start_async(token):
         global OMEGA_BOT_CONNECTED_AS, OMEGA_BOT_LAST_ERROR
         OMEGA_BOT_CONNECTED_AS = str(client.user or "")
         OMEGA_BOT_LAST_ERROR = ""
+        omega_write_bot_status(True, OMEGA_BOT_CONNECTED_AS, "")
         app.logger.info("Admin-only live status bot connected as %s", client.user)
         if not synced:
             try:
@@ -16743,22 +16720,92 @@ async def _omega_bot_start_async(token):
             live_status_scheduler.cancel()
         await client.close()
 
+def _omega_bot_state_file(kind):
+    """Shared state between the gunicorn panel and the omega-bot worker process."""
+    base = os.environ.get("OMEGA_DATA_DIR") or os.path.dirname(os.path.abspath(str(DATABASE))) or "."
+    return os.path.join(base, "omega-bot-%s.json" % kind)
+
+def omega_write_bot_status(connected, user="", error=""):
+    payload = {"pid": os.getpid(), "ts": time.time(), "connected": bool(connected),
+               "user": user or "", "error": (error or "")[:300]}
+    try:
+        path = _omega_bot_state_file("status")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        os.replace(tmp, path)
+    except OSError:
+        app.logger.debug("Could not write the bot status file", exc_info=True)
+
+def _omega_bot_pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+def _omega_bot_watch_restart():
+    """Panel writes a marker file; the worker closes the session so it reconnects."""
+    marker = _omega_bot_state_file("restart")
+    try:
+        last = os.path.getmtime(marker)
+    except OSError:
+        last = 0.0
+    while not OMEGA_HEALTH_STOP.is_set():
+        OMEGA_HEALTH_STOP.wait(5)
+        try:
+            current = os.path.getmtime(marker)
+        except OSError:
+            continue
+        if current <= last:
+            continue
+        last = current
+        client, loop = OMEGA_DISCORD_BOT, OMEGA_BOT_LOOP
+        if client is not None and loop is not None and not loop.is_closed():
+            try:
+                import asyncio as _aio
+                _aio.run_coroutine_threadsafe(client.close(), loop).result(timeout=15)
+                app.logger.info("Discord bot reconnect requested from the panel")
+            except Exception:
+                app.logger.exception("Could not restart the Discord bot on request")
+
+def _omega_bot_heartbeat():
+    while not OMEGA_HEALTH_STOP.is_set():
+        client = OMEGA_DISCORD_BOT
+        connected = bool(client is not None and not getattr(client, "is_closed", lambda: True)())
+        omega_write_bot_status(connected, OMEGA_BOT_CONNECTED_AS if connected else "", OMEGA_BOT_LAST_ERROR)
+        OMEGA_HEALTH_STOP.wait(20)
+
 def omega_bot_status():
+    info = {"connected": False, "user": "", "error": "", "thread": False,
+            "worker": False, "pid": 0, "updated": 0}
+    data = {}
+    try:
+        with open(_omega_bot_state_file("status"), encoding="utf-8") as handle:
+            data = json.load(handle) or {}
+    except (OSError, ValueError):
+        data = {}
+    if data and _omega_bot_pid_alive(data.get("pid")):
+        age = time.time() - float(data.get("ts") or 0)
+        fresh = age < 120
+        info.update(connected=bool(data.get("connected")) and fresh,
+                    user=str(data.get("user") or "") if fresh else "",
+                    error=str(data.get("error") or ""), worker=fresh,
+                    pid=int(data.get("pid") or 0), updated=float(data.get("ts") or 0))
+        return info
+    # Same-process mode (python app.py): fall back to the local client.
     client = OMEGA_DISCORD_BOT
     connected = bool(client is not None and not getattr(client, "is_closed", lambda: True)())
-    return {
-        "connected": connected,
-        "user": OMEGA_BOT_CONNECTED_AS if connected else "",
-        "error": OMEGA_BOT_LAST_ERROR,
-        "thread": any(t.name == "omega-discord-bot" and t.is_alive() for t in threading.enumerate()),
-    }
+    info.update(connected=connected, user=OMEGA_BOT_CONNECTED_AS if connected else "",
+                error=OMEGA_BOT_LAST_ERROR,
+                thread=any(t.name == "omega-discord-bot" and t.is_alive() for t in threading.enumerate()))
+    return info
 
 def omega_restart_bot():
     """Close the live Discord session so the supervisor reconnects immediately."""
     global OMEGA_BOT_LAST_ERROR
     client = OMEGA_DISCORD_BOT
     loop = OMEGA_BOT_LOOP
-    thread_alive = any(t.name == "omega-discord-bot" and t.is_alive() for t in threading.enumerate())
     if client is not None and loop is not None and not loop.is_closed():
         try:
             import asyncio as _aio
@@ -16767,8 +16814,15 @@ def omega_restart_bot():
             OMEGA_BOT_LAST_ERROR = str(exc)[:300]
             app.logger.warning("Could not close the Discord session: %s", exc)
     # Never start the bot inside a gunicorn worker: omega-bot.service owns it,
-    # otherwise two clients would connect with the same token.
-    return bool(client is not None or thread_alive)
+    # otherwise two clients would connect with the same token. The worker polls
+    # the marker file and reconnects its own session.
+    try:
+        with open(_omega_bot_state_file("restart"), "w", encoding="utf-8") as handle:
+            handle.write(str(time.time()))
+    except OSError as exc:
+        app.logger.warning("Could not write the bot restart marker: %s", exc)
+        return False
+    return omega_bot_status()["worker"]
 
 def omega_discord_bot_thread():
     """Run Discord in a dedicated daemon thread with a fresh asyncio loop per session."""
@@ -16815,6 +16869,7 @@ def omega_discord_bot_thread():
             else:
                 global OMEGA_BOT_LAST_ERROR
                 OMEGA_BOT_LAST_ERROR = str(exc)[:300]
+                omega_write_bot_status(False, "", OMEGA_BOT_LAST_ERROR)
                 app.logger.exception("Discord bot session ended; supervisor will retry")
         finally:
             try:
