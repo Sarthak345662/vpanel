@@ -2755,6 +2755,8 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                         <option value="ubuntu-22.04">Ubuntu 22.04 LTS</option>
                         <option value="ubuntu-24.04">Ubuntu 24.04 LTS</option>
                         <option value="ubuntu-26.04">Ubuntu 26.04</option>
+                        <option value="debian-11">Debian 11</option>
+                        <option value="debian-11">Debian 11</option>
                         <option value="debian-12">Debian 12</option>
                         <option value="debian-13">Debian 13</option>
                     </select>
