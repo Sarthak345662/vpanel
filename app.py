@@ -6670,21 +6670,21 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                     </div>
 
                                         <div class="card fade-in" style="text-align: center; padding: 24px;">
-                        <img src="https://www.debian.org/logos/openlogo-nd.svg" alt="Debian" style="width: 64px; height: 64px; margin: 0 auto 16px; display: block; object-fit: contain;">
+                        <img src="https://www.debian.org/logos/openlogo-nd.svg" alt="Debian 11 (bullseye)" style="width: 64px; height: 64px; margin: 0 auto 16px; display: block; object-fit: contain;">
                         <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">Debian 11 (Bullseye)</h3>
                         <p class="text-dim" style="font-size: 13px;">Stable Debian 11 release</p>
                         <span class="status status-running" style="margin-top: 12px; display: inline-block;">Available</span>
                     </div>
 
                     <div class="card fade-in" style="text-align: center; padding: 24px;">
-                        <img src="https://www.debian.org/logos/openlogo-nd.svg" alt="Debian" style="width: 64px; height: 64px; margin: 0 auto 16px; display: block; object-fit: contain;">
+                        <img src="https://www.debian.org/logos/openlogo-nd.svg" alt="Debian 12 (bookworm)" style="width: 64px; height: 64px; margin: 0 auto 16px; display: block; object-fit: contain;">
                         <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">Debian 12 (Bookworm)</h3>
                         <p class="text-dim" style="font-size: 13px;">Stable Debian 12 release</p>
                         <span class="status status-running" style="margin-top: 12px; display: inline-block;">Available</span>
                     </div>
 
 <div class="card fade-in" style="text-align: center; padding: 24px;">
-                        <img src="https://www.debian.org/logos/openlogo-nd.svg" alt="Debian" style="width: 64px; height: 64px; margin: 0 auto 16px; display: block; object-fit: contain;">
+                        <img src="https://www.debian.org/logos/openlogo-nd.svg" alt="Debian 13 (trixie)" style="width: 64px; height: 64px; margin: 0 auto 16px; display: block; object-fit: contain;">
                         <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 4px;">Debian 13 (Trixie)</h3>
                         <p class="text-dim" style="font-size: 13px;">Stable Debian 13 release</p>
                         <span class="status status-running" style="margin-top: 12px; display: inline-block;">Available</span>
