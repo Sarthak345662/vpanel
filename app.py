@@ -7,6 +7,7 @@ import shlex
 import string
 import struct
 import subprocess
+import shutil
 import sqlite3
 import hashlib
 import secrets
@@ -3208,6 +3209,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                         <option value="ubuntu-22.04" {% if vps['os_type'] == 'ubuntu-22.04' %}selected{% endif %}>Ubuntu 22.04 LTS</option>
                                         <option value="ubuntu-24.04" {% if vps['os_type'] == 'ubuntu-24.04' %}selected{% endif %}>Ubuntu 24.04 LTS</option>
                                         <option value="ubuntu-26.04" {% if vps['os_type'] == 'ubuntu-26.04' %}selected{% endif %}>Ubuntu 26.04</option>
+                                        <option value="debian-11" {% if vps['os_type'] == 'debian-11' %}selected{% endif %}>Debian 11</option>
                                         <option value="debian-12" {% if vps['os_type'] == 'debian-12' %}selected{% endif %}>Debian 12</option>
                                         <option value="debian-13" {% if vps['os_type'] == 'debian-13' %}selected{% endif %}>Debian 13</option>
                                     </select>
@@ -3769,6 +3771,7 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                                         <option value="ubuntu-22.04" {% if vps['os_type'] == 'ubuntu-22.04' %}selected{% endif %}>Ubuntu 22.04 LTS</option>
                                         <option value="ubuntu-24.04" {% if vps['os_type'] == 'ubuntu-24.04' %}selected{% endif %}>Ubuntu 24.04 LTS</option>
                                         <option value="ubuntu-26.04" {% if vps['os_type'] == 'ubuntu-26.04' %}selected{% endif %}>Ubuntu 26.04</option>
+                                        <option value="debian-11" {% if vps['os_type'] == 'debian-11' %}selected{% endif %}>Debian 11</option>
                                         <option value="debian-12" {% if vps['os_type'] == 'debian-12' %}selected{% endif %}>Debian 12</option>
                                         <option value="debian-13" {% if vps['os_type'] == 'debian-13' %}selected{% endif %}>Debian 13</option>
                                     </select>
@@ -9739,6 +9742,102 @@ def get_db():
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA busy_timeout=10000')
     return conn
+
+
+# ---------------------------------------------------------------------------
+# Live node health
+#
+# nodes.status used to be written once at startup (and by the add-node wizard),
+# so a node kept showing ONLINE after it stopped answering and stayed OFFLINE
+# after it came back, until the panel itself was restarted. Everyone reading the
+# column (panel pages, node list, Discord status embed) now gets a value that is
+# refreshed from the live engine/agent.
+# ---------------------------------------------------------------------------
+_omega_node_status_state = {"at": 0.0, "lock": threading.Lock()}
+# Serializes VPS creation so capacity checks cannot race each other.
+_omega_create_guard = threading.Lock()
+
+
+def _omega_local_engine_alive():
+    """True when the panel host's Incus/LXD engine answers right now."""
+    binary = shutil.which("incus") or shutil.which("lxc")
+    if not binary:
+        return False
+    try:
+        proc = subprocess.run(
+            [binary, "info"], capture_output=True, text=True, timeout=10
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def _omega_sync_node_status(force=False, max_age=15.0):
+    """Refresh every node's status from the live engine or node agent."""
+    state = _omega_node_status_state
+    now = time.time()
+    if not force and (now - state["at"]) < max_age:
+        return
+    if not state["lock"].acquire(blocking=False):
+        return
+    try:
+        conn = get_db()
+        try:
+            rows = conn.execute(
+                "SELECT id, name, is_local, node_url, api_key, status FROM nodes"
+            ).fetchall()
+            # Older databases were migrated without the last_seen column.
+            has_last_seen = "last_seen" in {
+                row[1] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()
+            }
+            for node in rows:
+                if int(node["is_local"] or 0):
+                    alive = _omega_local_engine_alive()
+                elif str(node["node_url"] or "").strip():
+                    payload, code = call_node_api(
+                        node["node_url"], node["api_key"], "/api/health", timeout=5
+                    )
+                    alive = code == 200 and not (
+                        isinstance(payload, dict) and payload.get("error")
+                    )
+                else:
+                    alive = False
+                status = "online" if alive else "offline"
+                if str(node["status"] or "").strip().lower() != status:
+                    if has_last_seen:
+                        conn.execute(
+                            "UPDATE nodes SET status=?, last_seen=? WHERE id=?",
+                            (status,
+                             datetime.now().isoformat(timespec="seconds") if alive else None,
+                             node["id"]),
+                        )
+                    else:
+                        conn.execute(
+                            "UPDATE nodes SET status=? WHERE id=?", (status, node["id"])
+                        )
+            conn.commit()
+        finally:
+            conn.close()
+        state["at"] = now
+    finally:
+        state["lock"].release()
+
+
+def _omega_node_status_monitor():
+    while True:
+        try:
+            _omega_sync_node_status(force=True)
+        except Exception:
+            app.logger.debug("Node status refresh failed", exc_info=True)
+        time.sleep(20)
+
+
+try:
+    threading.Thread(
+        target=_omega_node_status_monitor, name="omega-node-status", daemon=True
+    ).start()
+except Exception:  # pragma: no cover - thread creation is best effort
+    app.logger.exception("Could not start the node status monitor")
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
@@ -12147,6 +12246,7 @@ def system_info():
 @app.route('/nodes')
 @admin_required
 def node_management():
+    _omega_sync_node_status()
     conn = get_db()
 
     # Fetch the node records first so each remote node can report its own
@@ -13844,9 +13944,12 @@ def _create_vps_for_user(user, data):
     conn = get_db()
     container_id = None
     node = None
+    # Serialize creates inside this process so two simultaneous requests cannot
+    # reserve the same remaining RAM on a node.
+    if not _omega_create_guard.acquire(timeout=300):
+        conn.close()
+        raise RuntimeError("Another VPS is being created. Please retry in a moment.")
     try:
-        # Serialize concurrent requests so two simultaneous creates cannot
-        # reserve the same remaining RAM on a node.
         conn.execute("BEGIN IMMEDIATE")
         node_id = data.get("node_id")
         if node_id:
@@ -13871,6 +13974,12 @@ def _create_vps_for_user(user, data):
         if str(node["status"] or "").lower() != "online":
             raise RuntimeError(f"Node '{node['name']}' is offline; start its node agent and retry.")
         _omega_check_node_ram_capacity(conn, node, ram_mb, server_type)
+
+        # Release the SQLite write lock before provisioning starts. Creating the
+        # container and setting up SSH can take a while, and holding a write
+        # transaction that long made other requests fail with
+        # "database is locked" (e.g. "Error creating VPS: database is locked").
+        conn.commit()
 
         name = generate_container_name()
         ram = f"{ram_mb}MB"
@@ -13990,6 +14099,7 @@ def _create_vps_for_user(user, data):
         raise
     finally:
         conn.close()
+        _omega_create_guard.release()
 
 def _notify_vps_created(user, credentials):
     panel_link = credentials["panel_link"]
@@ -15733,6 +15843,7 @@ app.view_functions["os_icons"] = omega_os_icons_dynamic
 # Dashboard template expects node_vps to be a mapping; it must never receive vps_list.
 @login_required
 def dashboard_hardened():
+    _omega_sync_node_status()
     conn = get_db()
     user_vps = conn.execute("SELECT v.*, n.name AS node_name, NULL as shared_by FROM vps v LEFT JOIN nodes n ON v.node_id = n.id WHERE v.user_id = ?", (session["user_id"],)).fetchall()
     shared_vps = conn.execute("""
@@ -15765,48 +15876,36 @@ app.view_functions["dashboard"] = dashboard_hardened
 
 
 # Dynamic dropdown: changing the selected node fetches only that node's live aliases.
-EMBEDDED_TEMPLATES["os_icons.html"] = r'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Available OS Images · Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"><style>.os-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.os-card{background:rgba(18,27,45,.72);border:1px solid var(--border);border-radius:15px;padding:20px;text-align:center}.os-icon{font-size:42px;margin-bottom:12px}.os-alias{font:11px monospace;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;margin:2px auto 8px}.os-node{display:inline-block;margin:2px 4px 8px;padding:2px 8px;border-radius:99px;border:1px solid rgba(168,85,247,.35);background:rgba(168,85,247,.12);font-size:11px;color:#e9d5ff}.os-empty{padding:32px;text-align:center;color:var(--text-dim);border:1px dashed var(--border);border-radius:14px}</style></head><body>{% include 'icons.html' %}{% from 'components.html' import sidebar, topbar, overlay %}<div class="app-layout">{{ sidebar('osicons', settings, custom_icon) }}<div class="main-content">{{ topbar('OS Images', 'osicons') }}<div class="page"><div class="page-header"><div><h1>Available OS Images</h1><p class="page-header-sub">Live inventory fetched from your connected Incus/LXD nodes. Deleted images disappear after refresh.</p></div><button class="btn btn-ghost" onclick="location.reload()">Refresh inventory</button></div><div class="os-grid">
+EMBEDDED_TEMPLATES["os_icons.html"] = r'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Available OS Images · Vizion Panel</title><link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}"><style>.os-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.os-card{background:rgba(18,27,45,.72);border:1px solid var(--border);border-radius:15px;padding:20px;text-align:center}.os-icon{font-size:42px;margin-bottom:12px}.os-logo{width:56px;height:56px;display:block;margin:0 auto 14px;object-fit:contain;filter:drop-shadow(0 6px 16px rgba(0,0,0,.45))}.os-alias{font:11px monospace;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;margin:2px auto 8px}.os-node{display:inline-block;margin:2px 4px 8px;padding:2px 8px;border-radius:99px;border:1px solid rgba(168,85,247,.35);background:rgba(168,85,247,.12);font-size:11px;color:#e9d5ff}.os-empty{padding:32px;text-align:center;color:var(--text-dim);border:1px dashed var(--border);border-radius:14px}</style></head><body>{% include 'icons.html' %}{% from 'components.html' import sidebar, topbar, overlay %}<div class="app-layout">{{ sidebar('osicons', settings, custom_icon) }}<div class="main-content">{{ topbar('OS Images', 'osicons') }}<div class="page"><div class="page-header"><div><h1>Available OS Images</h1><p class="page-header-sub">Every operating system this panel can deploy. Pick the image in Create VPS, or reinstall a running VPS with it.</p></div><button class="btn btn-ghost" onclick="location.reload()">Refresh inventory</button></div><div class="os-grid">
                     <article class="os-card">
-                        <div class="os-icon">🟠</div>
-                        <h3>Ubuntu 22.04 (Jammy Jellyfish)</h3>
+                        <img class="os-icon os-logo" src="https://cdn.simpleicons.org/ubuntu/E95420" alt="Ubuntu 22.04 LTS (Jammy)">
+                        <h3>Ubuntu 22.04 LTS (Jammy)</h3>
                         <p class="os-alias">images:ubuntu/22.04</p>
-                        <span class="os-node">Node: Local</span>
-                        <span class="status status-running">Available now</span>
                     </article>
                     <article class="os-card">
-                        <div class="os-icon">🟠</div>
-                        <h3>Ubuntu 24.04 (Noble Numbat)</h3>
+                        <img class="os-icon os-logo" src="https://cdn.simpleicons.org/ubuntu/E95420" alt="Ubuntu 24.04 LTS (Noble)">
+                        <h3>Ubuntu 24.04 LTS (Noble)</h3>
                         <p class="os-alias">images:ubuntu/24.04</p>
-                        <span class="os-node">Node: Local</span>
-                        <span class="status status-running">Available now</span>
                     </article>
                     <article class="os-card">
-                        <div class="os-icon">🟠</div>
-                        <h3>Ubuntu 26.04 (Resolute Raccoon)</h3>
+                        <img class="os-icon os-logo" src="https://cdn.simpleicons.org/ubuntu/E95420" alt="Ubuntu 26.04 LTS">
+                        <h3>Ubuntu 26.04 LTS (Resolute)</h3>
                         <p class="os-alias">images:ubuntu/26.04</p>
-                        <span class="os-node">Node: Local</span>
-                        <span class="status status-running">Available now</span>
                     </article>
                     <article class="os-card">
-                        <div class="os-icon">🌀</div>
+                        <img class="os-icon os-logo" src="https://cdn.simpleicons.org/debian/A81D33" alt="Debian 11 (Bullseye)">
                         <h3>Debian 11 (Bullseye)</h3>
                         <p class="os-alias">images:debian/11</p>
-                        <span class="os-node">Node: Local</span>
-                        <span class="status status-running">Available now</span>
                     </article>
                     <article class="os-card">
-                        <div class="os-icon">🌀</div>
+                        <img class="os-icon os-logo" src="https://cdn.simpleicons.org/debian/A81D33" alt="Debian 12 (Bookworm)">
                         <h3>Debian 12 (Bookworm)</h3>
                         <p class="os-alias">images:debian/12</p>
-                        <span class="os-node">Node: Local</span>
-                        <span class="status status-running">Available now</span>
                     </article>
                     <article class="os-card">
-                        <div class="os-icon">🌀</div>
+                        <img class="os-icon os-logo" src="https://cdn.simpleicons.org/debian/A81D33" alt="Debian 13 (Trixie)">
                         <h3>Debian 13 (Trixie)</h3>
                         <p class="os-alias">images:debian/13</p>
-                        <span class="os-node">Node: Local</span>
-                        <span class="status status-running">Available now</span>
                     </article>
                     <div class="os-empty" style="display:none;">No images are currently available from the configured nodes. Install or import an image on a node, then refresh this page.</div>
                 </div></div></div></div>{{ overlay() }}<script src="{{ url_for('static', filename='js/main.js') }}"></script></body></html>'''
@@ -16393,6 +16492,7 @@ async def _omega_bot_start_async(token):
 
     def _snapshot_sync():
         """Read/update node metrics and active VPS counts without blocking asyncio."""
+        _omega_sync_node_status(max_age=5)
         conn = get_db()
         try:
             settings = _read_settings_sync(conn)
