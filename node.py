@@ -614,60 +614,105 @@ def create_container():
         }
         if vps_type == 'lxc':
             instance_config['security.privileged'] = 'true'
-        body = {
-            'name': name,
-            'source': _instance_source(image, vps_type),
-            'config': instance_config,
-            'devices': {
-                'root': {'type': 'disk', 'path': '/', 'pool': 'default', 'size': disk_str},
-            },
-        }
-        if vps_type == 'kvm':
-            body['type'] = 'virtual-machine'
         if ram:
-            body['config']['limits.memory'] = str(parse_ram_to_bytes(ram))
+            instance_config['limits.memory'] = str(parse_ram_to_bytes(ram))
         if cpu:
-            body['config']['limits.cpu'] = str(parse_cpu_count(cpu))
+            instance_config['limits.cpu'] = str(parse_cpu_count(cpu))
 
-        code, resp = _lxd_request('POST', '/1.0/instances?wait=600', data=body, timeout=600)
-        if code not in (200, 201, 202):
-            return jsonify({'error': f"Failed to create: {resp.get('error', resp)}"}), 500
-
-        if code in (201, 202) and isinstance(resp, dict) and resp.get('operation'):
-            op_url = resp['operation']
-            deadline = time.time() + 600
-            while time.time() < deadline:
-                o_code, o_resp = _lxd_request('GET', op_url)
-                if o_code == 200 and isinstance(o_resp, dict):
-                    meta = o_resp.get('metadata', {})
-                    if meta.get('status') == 'Success':
-                        break
-                    if meta.get('status') == 'Failure':
-                        return jsonify({'error': f'Create operation failed: {meta}'}), 500
-                time.sleep(1)
+        create_error = None
+        for source in _instance_sources(image, vps_type):
+            body = {
+                'name': name,
+                'source': source,
+                'config': instance_config,
+                'devices': {
+                    'root': {'type': 'disk', 'path': '/', 'pool': 'default', 'size': disk_str},
+                },
+            }
+            if vps_type == 'kvm':
+                body['type'] = 'virtual-machine'
+            code, resp = _lxd_request('POST', '/1.0/instances', data=body, timeout=600)
+            create_error = None
+            if code not in (200, 201, 202):
+                create_error = resp.get('error', resp) if isinstance(resp, dict) else resp
+            elif code in (201, 202) and isinstance(resp, dict) and resp.get('operation'):
+                op_url = resp['operation']
+                deadline = time.time() + 600
+                while time.time() < deadline:
+                    o_code, o_resp = _lxd_request('GET', op_url)
+                    if o_code == 200 and isinstance(o_resp, dict):
+                        meta = o_resp.get('metadata', {})
+                        if meta.get('status') == 'Success':
+                            break
+                        if meta.get('status') == 'Failure':
+                            create_error = meta
+                            break
+                    time.sleep(1)
+                else:
+                    create_error = {'err': 'Timed out waiting for the create operation'}
+            if create_error is None:
+                break
+            # A cached-image attempt failed, so retry the same image from the
+            # public remote and clean up anything left behind first.
+            _lxd_request('DELETE', f'/1.0/instances/{name}?force=1')
+        else:
+            return jsonify({'error': f'Create operation failed: {create_error}'}), 500
 
         return jsonify({'status': 'ok', 'container_id': name, 'name': name})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
-def _instance_source(image, vps_type):
-    """Image source for instance creation.
+IMAGE_SERVER = 'https://images.linuxcontainers.org'
 
-    Local aliases such as '22.04' point at cached container images, which cannot
-    be used for virtual machines. For KVM we pull the VM variant from the
-    public images remote instead.
+
+def _image_aliases(image):
+    """Local and fully qualified aliases for an image the panel sent us."""
+    raw = str(image or '').strip()
+    if ':' in raw:
+        raw = raw.split(':', 1)[1]
+    raw = raw.strip().strip('/')
+    aliases = [str(image or '').strip()]
+    if re.fullmatch(r'\d{2}\.\d{2}', raw):
+        aliases.append('ubuntu/' + raw)
+    elif raw and '/' not in raw:
+        slug = re.fullmatch(r'([a-z][a-z0-9]*)-([0-9][0-9.]*)', raw)
+        aliases.append(f'{slug.group(1)}/{slug.group(2)}' if slug else raw)
+    else:
+        aliases.append(raw)
+    ordered = []
+    for alias in aliases:
+        if alias and alias not in ordered:
+            ordered.append(alias)
+    return ordered
+
+
+def _instance_sources(image, vps_type):
+    """Instance sources to try for this image.
+
+    Incus rejects an image source that has an alias but no remote server
+    ("Image not provided for instance creation"), so after the cached alias we
+    retry with the public image server. Virtual machines always pull, because a
+    cached container image cannot boot as a VM.
     """
-    image = str(image or '').strip()
-    if vps_type != 'kvm':
-        return {'type': 'image', 'alias': image}
-    alias = image
-    if ':' in alias:
-        alias = alias.split(':', 1)[1]
-    if re.fullmatch(r'\d{2}\.\d{2}', alias):
-        alias = 'ubuntu/' + alias
-    return {'type': 'image', 'mode': 'pull', 'protocol': 'simplestreams',
-            'server': 'https://images.linuxcontainers.org', 'alias': alias}
+    aliases = _image_aliases(image)
+    aliases = [alias for alias in aliases if alias]
+    if vps_type == 'kvm':
+        ordered = []
+        for alias in aliases:
+            if '/' not in alias:
+                continue
+            ordered.append({'type': 'image', 'mode': 'pull', 'protocol': 'simplestreams',
+                            'server': IMAGE_SERVER, 'alias': alias})
+        if ordered:
+            return ordered[:1]
+        return [{'type': 'image', 'mode': 'pull', 'protocol': 'simplestreams',
+                 'server': IMAGE_SERVER, 'alias': aliases[-1]}]
+    sources = [{'type': 'image', 'alias': alias} for alias in aliases]
+    remote_alias = aliases[-1]
+    sources.append({'type': 'image', 'mode': 'pull', 'protocol': 'simplestreams',
+                    'server': IMAGE_SERVER, 'alias': remote_alias})
+    return sources
 
 
 @app.route('/api/container/<container_id>/nesting', methods=['POST'])

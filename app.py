@@ -120,44 +120,121 @@ def _parse_cpu_count(cpu_str):
     if m:
         return int(m.group(1))
     return 1
+OMEGA_IMAGE_SERVER = "https://images.linuxcontainers.org"
+
+
+def _omega_image_aliases(os_type):
+    """Aliases to try for an OS key such as ubuntu-22.04 or images:debian/12."""
+    raw = str(os_type or "ubuntu-22.04").strip()
+    aliases = []
+    mapped = LXC_IMAGE_MAP.get(raw) or LXC_IMAGE_MAP.get("vps-" + raw)
+    if mapped:
+        aliases.append(mapped)
+    full = raw.split(":", 1)[1] if ":" in raw else raw
+    full = full.strip().strip("/")
+    if re.fullmatch(r"\d{2}\.\d{2}", full):
+        full = "ubuntu/" + full
+    elif "/" not in full:
+        # Panel slugs look like ubuntu-22.04 or debian-12; the image server
+        # calls the same image ubuntu/22.04 and debian/12.
+        slug = re.fullmatch(r"([a-z][a-z0-9]*)-([0-9][0-9.]*)", full)
+        if slug:
+            full = f"{slug.group(1)}/{slug.group(2)}"
+    if full:
+        aliases.append(full)
+    ordered = []
+    for alias in aliases:
+        if alias and alias not in ordered:
+            ordered.append(alias)
+    return ordered or ["ubuntu/22.04"]
+
+
+def _omega_image_sources(os_type):
+    """Instance sources to try, cheapest first.
+
+    Incus/LXD rejects a request whose image source has an alias but no remote
+    server ("Image not provided for instance creation"), so every candidate
+    carries the remote image server the alias belongs to. A cached local alias
+    is still tried first because it needs no download.
+    """
+    if str(os_type or "").startswith("backup-"):
+        return [{"type": "image", "alias": os_type}]
+    aliases = _omega_image_aliases(os_type)
+    sources = [{"type": "image", "alias": alias} for alias in aliases]
+    # The image server only knows the fully qualified alias (ubuntu/22.04), not
+    # the short local one (22.04), so the remote pull uses the qualified name.
+    remote_aliases = [alias for alias in aliases if "/" in alias] or aliases[-1:]
+    for alias in remote_aliases:
+        sources.append({
+            "type": "image", "mode": "pull", "protocol": "simplestreams",
+            "server": OMEGA_IMAGE_SERVER, "alias": alias,
+        })
+    return sources
+
+
+def _omega_wait_lxd_operation(op_url, timeout=600):
+    """Wait for an LXD/Incus operation; return None on success or the failure."""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        code, resp = _lxd_request('GET', op_url)
+        if code == 200 and isinstance(resp, dict):
+            meta = resp.get('metadata') or {}
+            status = str(meta.get('status') or '').strip().lower()
+            if status == 'success':
+                return None
+            if status == 'failure':
+                return meta
+            last = meta
+        elif code and code >= 400:
+            return resp
+        time.sleep(1)
+    return last or {'err': 'Timed out waiting for the instance create operation'}
+
+
 def lxc_create(name, os_type='ubuntu-22.04', ram='2GB', cpu='1 vCPU', disk='20GB'):
     ram_bytes = _parse_ram_to_bytes(ram)
     cpu_count = _parse_cpu_count(cpu)
     try:
         disk_bytes = int(float(str(disk).replace('GB', '').strip()) * 1073741824)
-    except:
+    except Exception:
         disk_bytes = 21474836480
-    if os_type.startswith('backup-'):
-        source = {'type': 'image', 'alias': os_type}
+    payload_base = {
+        'profiles': ['default'],
+        'name': name,
+        'config': {
+            'limits.memory': str(ram_bytes),
+            'limits.cpu': str(cpu_count),
+            'security.privileged': 'true',
+        },
+        'devices': {'root': {'type': 'disk', 'path': '/', 'pool': 'default', 'size': str(disk_bytes)}},
+    }
+    # Drop a stale instance left behind by an earlier failed attempt.
+    _lxd_request('DELETE', f'/1.0/instances/{name}?force=1')
+    failure = None
+    for source in _omega_image_sources(os_type):
+        payload = dict(payload_base)
+        payload['source'] = source
+        code, resp = _lxd_request('POST', '/1.0/instances', data=payload)
+        if code not in (200, 201, 202):
+            failure = resp.get('error', resp) if isinstance(resp, dict) else resp
+        elif isinstance(resp, dict) and resp.get('operation'):
+            failure = _omega_wait_lxd_operation(resp['operation'], timeout=600)
+        else:
+            failure = None
+        if failure is None:
+            break
+        app.logger.warning("LXD create with source %s failed: %s", source, failure)
+        # Drop the half-created instance before trying the next image source.
+        _lxd_request('DELETE', f'/1.0/instances/{name}?force=1')
     else:
-        os_key = str(os_type or 'ubuntu-22.04').strip()
-        alias = LXC_IMAGE_MAP.get(os_key, LXC_IMAGE_MAP.get('vps-' + os_key))
-        # The panel normally supplies a mapped key (for example ubuntu-22.04),
-        # while remote agents and Discord image selection may supply an upstream
-        # Incus alias directly (for example 22.04 or debian/13).
-        if not alias:
-            alias = os_key or '22.04'
-        source = {'type': 'image', 'alias': alias}
-    config = {'source': source, 'profiles': ['default'], 'name': name, 'config': {'limits.memory': str(ram_bytes), 'limits.cpu': str(cpu_count), 'security.privileged': 'true'}, 'devices': {'root': {'type': 'disk', 'path': '/', 'pool': 'default', 'size': str(disk_bytes)}}}
-    code, resp = _lxd_request('POST', '/1.0/instances?wait=600', data=config)
-    if code not in (200, 201, 202):
-        raise Exception(f"Failed to create LXC container: {resp.get('error', '') if isinstance(resp, dict) else resp}")
-    if code in (201, 202) and isinstance(resp, dict) and resp.get('operation'):
-        op_url = resp['operation']
-        deadline = time.time() + 600
-        while time.time() < deadline:
-            o_code, o_resp = _lxd_request('GET', op_url)
-            if o_code == 200 and isinstance(o_resp, dict):
-                meta = o_resp.get('metadata', {})
-                if meta.get('status') == 'Success':
-                    break
-                if meta.get('status') == 'Failure':
-                    raise Exception(f"LXD create operation failed: {meta}")
-            time.sleep(1)
+        raise Exception(f"LXD create operation failed: {failure}")
     lxc_start(name)
     lxc_wait_running(name, timeout=150)
     _lxc_fix_networking(name)
     return name
+
+
 def lxc_start(name):
     _lxd_request('PUT', f"/1.0/instances/{name}/state?wait=600", data={'action': 'start'})
 def lxc_is_running(name):
