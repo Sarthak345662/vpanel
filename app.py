@@ -1422,7 +1422,174 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             .auth-card { padding: 20px; border-radius: 14px; }
             .auth-logo-icon { width: 44px; height: 44px; }
         }
-    </style>
+    
+        .auth-plans {
+            margin: 18px 0 4px;
+            background: rgba(255,255,255,.03);
+            border: 1px solid rgba(255,255,255,.07);
+            border-radius: 16px;
+            padding: 16px 14px 14px;
+        }
+        .auth-plans-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255,255,255,.07);
+        }
+        .auth-plans-head h3 {
+            margin: 0;
+            font-size: 12.5px;
+            font-weight: 700;
+            letter-spacing: .2px;
+            text-transform: uppercase;
+            color: #c4b5fd;
+        }
+        .auth-plans-head p {
+            margin: 0;
+            font-size: 11.5px;
+            color: var(--text-dim);
+        }
+        .auth-plans-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        .auth-plan-card {
+            position: relative;
+            border-radius: 13px;
+            overflow: hidden;
+            min-height: 120px;
+            display: flex;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-image:
+                radial-gradient(320px 180px at 80% 0%, rgba(139,92,246,.30), transparent 70%),
+                linear-gradient(135deg, #1b1530, #0b0a13);
+            border: 1px solid rgba(255,255,255,.08);
+            transition: transform .18s ease, border-color .18s ease;
+        }
+        .auth-plan-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(168,85,247,.45);
+        }
+        .auth-plan-overlay {
+            position: relative;
+            z-index: 1;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            gap: 5px;
+            padding: 11px 12px;
+            background: linear-gradient(180deg, rgba(8,8,15,.06) 0%, rgba(8,8,15,.62) 55%, rgba(6,6,12,.95) 100%);
+        }
+        .auth-plan-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: absolute;
+            top: 9px;
+            left: 11px;
+            right: 11px;
+        }
+        .auth-plan-tag {
+            font-size: 9.5px;
+            font-weight: 700;
+            letter-spacing: .10em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,.92);
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: rgba(12,10,20,.55);
+            border: 1px solid rgba(255,255,255,.16);
+        }
+        .auth-plan-price {
+            font-size: 17px;
+            font-weight: 800;
+            line-height: 1.05;
+            color: #fff;
+            text-shadow: 0 2px 10px rgba(0,0,0,.5);
+            letter-spacing: -.3px;
+        }
+        .auth-plan-price .grad {
+            background: linear-gradient(100deg, #fff 0%, #d8c9ff 40%, #a855f7 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+        }
+        .auth-plan-period {
+            font-size: 10.5px;
+            font-weight: 500;
+            color: rgba(255,255,255,.62);
+            margin-left: 4px;
+            -webkit-text-fill-color: rgba(255,255,255,.62);
+        }
+        .auth-plan-name {
+            font-size: 12.5px;
+            font-weight: 700;
+            color: #fff;
+            margin: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            text-shadow: 0 1px 6px rgba(0,0,0,.5);
+        }
+        .auth-plan-specs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin: 0;
+        }
+        .auth-plan-specs span {
+            font-size: 10px;
+            font-weight: 600;
+            color: rgba(255,255,255,.86);
+            padding: 2px 6px;
+            border-radius: 999px;
+            background: rgba(255,255,255,.07);
+            border: 1px solid rgba(255,255,255,.09);
+        }
+        .auth-plan-buy {
+            margin-top: 4px;
+            width: 100%;
+            padding: 7px 10px;
+            border: 0;
+            border-radius: 9px;
+            cursor: pointer;
+            font-size: 11.5px;
+            font-weight: 700;
+            font-family: inherit;
+            color: #fff;
+            background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+            box-shadow: 0 10px 24px -14px rgba(139,92,246,.95), inset 0 1px 0 rgba(255,255,255,.2);
+            transition: transform .14s ease, box-shadow .14s ease, filter .14s ease;
+        }
+        .auth-plan-buy:hover {
+            transform: translateY(-1px);
+            filter: brightness(1.08);
+            box-shadow: 0 14px 30px -14px rgba(139,92,246,1);
+        }
+        .auth-plan-empty {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 14px;
+            border: 1px dashed rgba(168,85,247,.3);
+            border-radius: 12px;
+            background: rgba(168,85,247,.05);
+            color: var(--text-dim);
+            font-size: 11.5px;
+        }
+        @media (max-width: 420px) {
+            .auth-plans-grid { grid-template-columns: 1fr; }
+            .auth-plans { padding: 14px 12px 12px; }
+        }
+</style>
 </head>
 <body>
     <div class="auth-bg"></div>
@@ -1498,6 +1665,37 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
 
                     <button type="submit" class="btn-submit">Sign in</button>
                 </form>
+            </div>
+
+            <div class="auth-plans">
+                <div class="auth-plans-head">
+                    <h3>Available plans</h3>
+                    <p>Pick a plan to get started</p>
+                </div>
+                <div class="auth-plans-grid">
+                    {% for plan in plans %}
+                    <a class="auth-plan-card" href="{{ url_for('billing_home') }}" style="{% if plan['bg_image'] %}background-image: url('{{ plan['bg_image'] }}');{% endif %}">
+                        <div class="auth-plan-overlay">
+                            <div class="auth-plan-top">
+                                <span class="auth-plan-tag">VPS plan</span>
+                            </div>
+                            <div class="auth-plan-price"><span class="grad">{{ currency }} {{ '%.2f'|format(plan['price'] or 0) }}</span><span class="auth-plan-period">/ {{ plan['duration_days'] }}d</span></div>
+                            <p class="auth-plan-name">{{ plan['name'] }}</p>
+                            <p class="auth-plan-specs">
+                                <span>{{ plan['cpu'] }} vCPU</span>
+                                <span>{{ plan['ram'] }} MiB</span>
+                                <span>{{ plan['disk'] }} GiB</span>
+                                <span>{{ plan['vps_limit'] }} VPS</span>
+                            </p>
+                            <form method="post" action="{{ url_for('billing_buy', plan_id=plan['id']) }}">
+                                <button class="auth-plan-buy" type="submit">Buy this plan</button>
+                            </form>
+                        </div>
+                    </a>
+                    {% else %}
+                    <div class="auth-plan-empty">No plans available right now.</div>
+                    {% endfor %}
+                </div>
             </div>
 
             <div class="auth-footer">
