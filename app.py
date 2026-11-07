@@ -16618,7 +16618,7 @@ tail -n 20 /tmp/sshx_output.log 2>/dev/null
 exit 0
 """
         command = script
-        exit_code, output = lxc_attach(container_id, command, timeout=75)
+        exit_code, output = lxc_attach(container_id, command, timeout=75, wait_ssh=180)
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="ignore")
         if "sshx.io" not in str(output):
@@ -18000,9 +18000,23 @@ _omega_lxc_attach_base = lxc_attach
 
 
 def lxc_attach(name, command, timeout=60, **kwargs):
+    wait_ssh = kwargs.pop("wait_ssh", 0) or 0
     if omega_vps_kind(name) == "nonkvm":
         password, port = _omega_nonkvm_credentials(name)
-        return _omega_ssh_exec(port, password, command, timeout=timeout)
+        if not port:
+            raise RuntimeError(
+                "No SSH port is recorded for this Non-KVM VPS; start it once from the panel."
+            )
+        if wait_ssh:
+            _omega_wait_guest_ssh(name, port, password, timeout=wait_ssh)
+        code, output = _omega_ssh_exec(port, password, command, timeout=timeout)
+        if code == 255:
+            detail = " ".join(str(output or "").split())[-300:] or "no response from the guest"
+            raise RuntimeError(
+                "The Non-KVM guest is not answering SSH on 127.0.0.1:%s yet (%s). "
+                "Boot log: /var/lib/omega-panel/nonkvm/%s/console.log" % (port, detail, name)
+            )
+        return code, output
     code, output = _omega_lxc_attach_base(name, command, timeout=timeout, **kwargs)
     if not output:
         # The REST exec call reports "record-output" but several Incus builds
@@ -18019,15 +18033,6 @@ def lxc_attach(name, command, timeout=60, **kwargs):
                 app.logger.debug("CLI exec fallback failed for %s", name, exc_info=True)
     return code, output
 
-
-# --- LXC creation ----------------------------------------------------------
-#
-# The old REST payload always requested a root disk of ``size=20GiB`` on a pool
-# called ``default``. On a host initialised with the ``dir`` driver (Incus'
-# default for ``incus admin init --auto``) that size is unsupported, and on a
-# host with another pool name the request failed outright. Creation now uses the
-# host's real pool/driver, makes sure the image exists first, and surfaces the
-# launcher's error text instead of hanging.
 
 _omega_lxc_create_base = lxc_create
 
@@ -18625,4 +18630,55 @@ def omega_incus_diagnostics():
         "nodes": [dict(node) for node in nodes],
         "vps": vps_report,
     })
+
+def _omega_nonkvm_pid_alive(name):
+    """True when a QEMU process is still running for this Non-KVM VPS."""
+    try:
+        pid_file = os.path.join(omega_nonkvm_state_dir(name), "qemu.pid")
+        with open(pid_file, encoding="utf-8") as handle:
+            pid = int(handle.read().strip() or 0)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _omega_wait_guest_ssh(name, port, password, timeout=180):
+    """Wait for a Non-KVM guest to answer SSH.
+
+    Without KVM the guest boots under TCG, which regularly needs one to three
+    minutes, so a single ssh attempt right after start reported "Connection
+    timed out during banner exchange" and SSHX could never be created.
+    """
+    deadline = time.time() + max(5, int(timeout))
+    last = ""
+    while time.time() < deadline:
+        code, output = _omega_ssh_exec(port, password, "true", timeout=15)
+        if code == 0:
+            return True
+        last = " ".join(str(output or "").split())[-200:]
+        if not _omega_nonkvm_pid_alive(name):
+            raise RuntimeError(
+                f"QEMU is not running for {name}; start the VPS once from the panel and retry."
+            )
+        time.sleep(3)
+    raise RuntimeError(
+        "The Non-KVM guest did not finish booting in %ss (%s). "
+        "Boot log: /var/lib/omega-panel/nonkvm/%s/console.log"
+        % (timeout, last or "no SSH response", name)
+    )
+
+
+@app.after_request
+def _omega_static_no_cache(resp):
+    """omega.js changes with every release; a cached copy hides new animations."""
+    try:
+        path = str(getattr(request, "path", "") or "")
+        if path.endswith(("/static/js/omega.js", "/static/css/omega.css")):
+            resp.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+    except Exception:
+        pass
+    return resp
 
