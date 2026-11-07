@@ -181,18 +181,18 @@ GLOBAL_CSS = """
 .omega-action-overlay .oao-spin::before{content:"";position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,#22d3ee,#a855f7,#f472b6,#22d3ee);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 8px),#000 calc(100% - 7px));mask:radial-gradient(farthest-side,transparent calc(100% - 8px),#000 calc(100% - 7px));animation:oao-spin 1s linear infinite;filter:drop-shadow(0 0 12px rgba(168,85,247,.5))}
 .omega-action-overlay .oao-spin::after{content:"";position:absolute;inset:30px;border-radius:50%;background:#22d3ee;box-shadow:0 0 18px #22d3ee;animation:oao-pulse .9s ease-in-out infinite}
 .omega-action-overlay .oao-bar{height:6px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden}
-.omega-action-overlay .oao-bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#a855f7,#f472b6);background-size:220% 100%;animation:oao-flow 1.9s ease-in-out infinite}
+.omega-action-overlay .oao-bar i{display:block;height:100%;width:6%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#a855f7,#f472b6);background-size:220% 100%;transition:width .9s ease;animation:oao-flow 1.8s linear infinite}
 .omega-action-overlay .oao-dots{display:flex;gap:7px;justify-content:center;margin-top:12px}
 .omega-action-overlay .oao-dots i{width:8px;height:8px;border-radius:50%;background:#22d3ee;animation:oao-bounce 1s ease-in-out infinite}
 .omega-action-overlay .oao-dots i:nth-child(2){animation-delay:.15s;background:#a78bfa}
 .omega-action-overlay .oao-dots i:nth-child(3){animation-delay:.3s;background:#34d399}
 @keyframes oao-spin{to{transform:rotate(360deg)}}
-@keyframes oao-flow{0%{width:14%;background-position:0 0}50%{width:82%;background-position:110% 0}100%{width:20%;background-position:220% 0}}
+@keyframes oao-flow{0%{background-position:0 0}100%{background-position:220% 0}}
 @keyframes oao-bounce{0%,100%{transform:translateY(0);opacity:.45}50%{transform:translateY(-5px);opacity:1}}
 @keyframes oao-pulse{0%,100%{transform:scale(.6);opacity:.5}50%{transform:scale(1);opacity:1}}
 #omega-mini-spin{position:fixed;top:16px;right:16px;z-index:9997;width:26px;height:26px;border-radius:50%;border:2px solid rgba(255,255,255,.14);border-top-color:#22d3ee;opacity:0;pointer-events:none}
 #omega-mini-spin.show{opacity:1;animation:oao-spin .8s linear infinite}
-@media (prefers-reduced-motion: reduce){.omega-action-overlay .oao-spin::before,.omega-action-overlay .oao-spin::after,#omega-mini-spin.show{animation-duration:3s}.omega-action-overlay .oao-spin::after{animation:none;transform:none}.omega-action-overlay .oao-bar i{animation:none;width:60%}}
+@media (prefers-reduced-motion: reduce){.omega-action-overlay .oao-spin::before,.omega-action-overlay .oao-spin::after,#omega-mini-spin.show{animation-duration:3s}.omega-action-overlay .oao-spin::after{animation:none;transform:none}.omega-action-overlay .oao-bar i{animation:none}}
 """
 
 

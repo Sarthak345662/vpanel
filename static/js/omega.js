@@ -93,14 +93,26 @@
   if (window.__omegaActionAnim) return;
   window.__omegaActionAnim = true;
   const ACTIONS = [
-    {re: /reinstall|rebuild|re-install/, title: 'Reinstalling the operating system…',
-     step: 'The disk is wiped and the image is deployed again. This can take a few minutes.'},
-    {re: /\/vps\/\d+\/features/, title: 'Switching the backend…', step: 'Reinstalling the VPS from its image…'},
-    {re: /fix-ssh|regen-ssh|ssh/i, title: 'Preparing SSHX access…', step: 'Setting the root password and opening a public port…'},
-    {re: /kvm-access|nesting|toggle/i, title: 'Applying setting…', step: 'Updating the VPS and restarting it…'},
-    {re: /restart/i, title: 'Restarting the VPS…', step: 'Services are starting again…'},
-    {re: /start/i, title: 'Starting the VPS…', step: 'The container is booting…'},
-    {re: /stop|shutdown/i, title: 'Stopping the VPS…', step: 'Shutting the processes down…'}
+    {re: /regen-ssh|fix-ssh|sshx|ssh/i, title: 'Creating SSHX access\u2026',
+     steps: ['Installing sshx inside the VPS\u2026',
+             'Starting the sshx agent\u2026',
+             'Waiting for the sshx.io share link\u2026',
+             'Saving the link to this VPS\u2026']},
+    {re: /reinstall|rebuild|re-install/, title: 'Reinstalling the operating system\u2026',
+     steps: ['Wiping the current disk\u2026',
+             'Deploying the operating system image\u2026',
+             'Configuring networking and SSH\u2026',
+             'Starting the fresh system\u2026']},
+    {re: /\/vps\/\d+\/features/, title: 'Switching the backend\u2026',
+     steps: ['Preparing the new backend\u2026', 'Rebuilding the VPS from its image\u2026']},
+    {re: /kvm-access|nesting|toggle/i, title: 'Applying setting\u2026',
+     steps: ['Updating the VPS configuration\u2026', 'Restarting to apply it\u2026']},
+    {re: /restart/i, title: 'Restarting the VPS\u2026',
+     steps: ['Stopping the services\u2026', 'Booting the VPS again\u2026', 'Waiting for SSH to answer\u2026']},
+    {re: /start/i, title: 'Starting the VPS\u2026',
+     steps: ['Allocating resources\u2026', 'Booting the container\u2026', 'Waiting for networking\u2026']},
+    {re: /stop|shutdown/i, title: 'Stopping the VPS\u2026',
+     steps: ['Sending the shutdown signal\u2026', 'Shutting the processes down\u2026']}
   ];
   function match(url){
     url = (url || '').toLowerCase();
@@ -120,13 +132,33 @@
       document.body.appendChild(el);
     }
     el.querySelector('h4').textContent = a.title;
-    el.querySelector('p').textContent = a.step;
+    const label = el.querySelector('p');
+    const bar = el.querySelector('.oao-bar i');
+    const steps = (a.steps && a.steps.length) ? a.steps : [a.step || ''];
+    let at = 0;
+    label.textContent = steps[0];
+    bar.style.width = '9%';
+    clearInterval(el.__omegaSteps);
+    if (steps.length > 1) {
+      // Long actions (SSHX install, reinstall) take a while: walk the steps so
+      // the card keeps telling the user what the panel is doing.
+      el.__omegaSteps = setInterval(function(){
+        if (at < steps.length - 1) {
+          at++;
+          label.textContent = steps[at];
+        }
+        bar.style.width = Math.min(92, 9 + ((at + 1) / steps.length) * 80) + '%';
+      }, 2600);
+    }
     requestAnimationFrame(function(){ el.classList.add('show'); });
     return el;
   }
   function hide(){
     const el = document.getElementById('omega-action-overlay');
-    if (el) { el.classList.remove('show'); setTimeout(function(){ el.remove(); }, 400); }
+    if (!el) return;
+    clearInterval(el.__omegaSteps);
+    el.classList.remove('show');
+    setTimeout(function(){ el.remove(); }, 400);
   }
   document.addEventListener('submit', function(ev){
     const form = ev.target;
