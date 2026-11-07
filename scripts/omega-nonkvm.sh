@@ -21,7 +21,9 @@ set -Eeuo pipefail
 
 STATE_ROOT="${OMEGA_NONKVM_DIR:-/var/lib/omega-panel/nonkvm}"
 IMAGE_ROOT="${OMEGA_NONKVM_IMAGE_DIR:-/var/lib/omega-panel/images}"
-SSH_BIND="${OMEGA_NONKVM_SSH_BIND:-127.0.0.1}"
+# The panel hands the customer "ssh root@<public-ip> -p <port>", so the
+# forwarded port has to listen on every interface, not just loopback.
+SSH_BIND="${OMEGA_NONKVM_SSH_BIND:-0.0.0.0}"
 PORT_BASE="${OMEGA_NONKVM_PORT_BASE:-22000}"
 ENV_BASE_IMAGE="${OMEGA_NONKVM_BASE_IMAGE:-}"
 

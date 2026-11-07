@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -165,6 +166,140 @@ def vm_image_ref(alias: str) -> str:
     return f"images:{value}"
 
 
+# ---------------------------------------------------------------------------
+# Host capabilities the panel used to hardcode
+#
+# The old code always launched with ``-d root,size=20GiB`` and implicitly
+# expected a storage pool called ``default``. On hosts where Incus was
+# initialised with another pool name (or with the ``dir`` driver, which has no
+# per-volume size) every container create failed or sat waiting for an image
+# that was never pulled. These helpers discover the real host layout so the
+# panel works on any Incus install.
+# ---------------------------------------------------------------------------
+_IMAGE_ALIAS_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _incus(args: list[str], timeout: int = 60) -> tuple[int, str]:
+    binary = cli()
+    if not binary:
+        return 127, "Incus/LXD CLI is not installed on this node."
+    return _run([binary, *args], timeout=timeout)
+
+
+def storage_pool() -> tuple[str, str]:
+    """Return ``(pool_name, driver)`` for the pool instances are created on."""
+    code, output = _incus(["storage", "list", "--format", "csv", "-c", "nd"], timeout=20)
+    pools: list[tuple[str, str]] = []
+    if code == 0:
+        for line in output.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if not parts or not parts[0] or parts[0].lower() == "name":
+                continue
+            driver = parts[1].lower() if len(parts) > 1 else ""
+            pools.append((parts[0], driver))
+    if not pools:
+        return "default", ""
+    for preferred in ("default", "local", "incus", "pool1", "data"):
+        for name, driver in pools:
+            if name == preferred:
+                return name, driver
+    return pools[0]
+
+
+def pool_supports_size(driver: str) -> bool:
+    """``dir``/``cephfs`` pools cannot accept a per-instance disk size."""
+    return str(driver or "").lower() not in {"dir", "cephfs", "ceph-object"}
+
+
+def default_profile_exists() -> bool:
+    code, _ = _incus(["profile", "show", "default"], timeout=15)
+    return code == 0
+
+
+def _local_image_aliases() -> set[str]:
+    code, output = _incus(["image", "list", "--format", "csv", "-c", "l"], timeout=30)
+    if code != 0:
+        return set()
+    return {line.strip() for line in output.splitlines() if line.strip()}
+
+
+def container_image_ref(alias: str) -> str:
+    """Return a reference Incus can launch for a *container*.
+
+    A locally cached alias is preferred (no download); otherwise the image is
+    pulled from the upstream ``images:`` remote so a fresh host is not stuck on
+    "Image not found".
+    """
+    value = str(alias or "").strip() or "22.04"
+    if ":" in value:
+        return value
+    cached = _IMAGE_ALIAS_CACHE.get(value)
+    if cached and (time.time() - cached[0]) < 300:
+        return cached[1]
+    aliases = _local_image_aliases()
+    if value in aliases:
+        _IMAGE_ALIAS_CACHE[value] = (time.time(), value)
+        return value
+    if "/" not in value and re.fullmatch(r"\d{2}\.\d{2}", value):
+        value = f"ubuntu/{value}"
+    ref = f"images:{value}"
+    _IMAGE_ALIAS_CACHE[value] = (time.time(), ref)
+    return ref
+
+
+def ensure_image(image_ref: str, timeout: int = 900) -> tuple[bool, str]:
+    """Make sure a launchable image exists locally; pull it when missing.
+
+    Returns ``(ok, output)``. Pulling here (instead of inside ``incus launch``)
+    lets the panel report real progress to the user and distinguishes a slow
+    download from a broken image name.
+    """
+    binary = cli()
+    if not binary:
+        return False, "Incus/LXD CLI is not installed on this node."
+    ref = str(image_ref or "").strip()
+    if not ref:
+        return False, "No image reference was given."
+    if not ref.startswith("images:") and ":" not in ref:
+        # Local alias: nothing to pull, launch resolves it.
+        return True, ref
+    code, output = _incus(["image", "show", ref], timeout=60)
+    if code == 0:
+        return True, ref
+    code, output = _incus(["image", "copy", ref, "local:"], timeout=timeout)
+    if code == 0:
+        return True, output[-400:]
+    return False, output[-800:]
+
+
+def status(name: str, vps_type: str = DEFAULT_TYPE) -> dict:
+    """Live state of an instance, whatever backend it lives on.
+
+    ``state`` is one of ``running``, ``stopped``, ``not_found`` or ``unknown``
+    so callers can render the same badge for LXC, KVM and non-KVM VPSs.
+    """
+    vps_type = normalise_type(vps_type)
+    if vps_type == "nonkvm":
+        code, output = _run_nonkvm(["status", "--name", name], timeout=45)
+        info = parse_output(output)
+        state = str(info.get("OMEGA_STATUS") or "").strip().lower()
+        if state in {"running", "stopped", "not_found"}:
+            return {"state": state, "ip": info.get("OMEGA_SSH_HOST", "127.0.0.1"),
+                    "ssh_port": info.get("OMEGA_SSH_PORT", ""), "raw": output[-600:]}
+        lowered = (output or "").lower()
+        if "does not exist" in lowered or "not exist" in lowered:
+            return {"state": "not_found", "ip": "", "ssh_port": "", "raw": output[-600:]}
+        return {"state": "unknown", "ip": "", "ssh_port": "", "raw": output[-600:]}
+    code, output = _incus(["info", name], timeout=20)
+    if code != 0:
+        lowered = (output or "").lower()
+        state = "not_found" if ("not found" in lowered or "does not exist" in lowered) else "unknown"
+        return {"state": state, "ip": "", "ssh_port": "", "raw": output[-600:]}
+    running = "status: running" in output.lower()
+    return {"state": "running" if running else "stopped", "ip": instance_ip(name, vps_type),
+            "ssh_port": "", "raw": output[-600:]}
+
+
 def create_instance(name: str, image_alias: str, vps_type: str = DEFAULT_TYPE,
                     nesting: bool = False, vcpus: int = 2, memory_mb: int = 2048,
                     disk_gb: int = 20, image_path: str = "") -> dict:
@@ -193,10 +328,25 @@ def create_instance(name: str, image_alias: str, vps_type: str = DEFAULT_TYPE,
     binary = cli()
     if not binary:
         raise VpsTypeError("Incus/LXD CLI is not installed on this node.")
-    image_ref = vm_image_ref(image_alias) if vps_type == "kvm" else str(image_alias)
+    if not default_profile_exists():
+        raise VpsTypeError(
+            "Incus is installed but not initialised (the 'default' profile is missing), "
+            "or the panel service account cannot access the Incus socket. Run "
+            "'sudo incus admin init --auto' and add the service user to the incus-admin "
+            "group, then restart the panel."
+        )
+    pool_name, pool_driver = storage_pool()
+    image_ref = vm_image_ref(image_alias) if vps_type == "kvm" else container_image_ref(image_alias)
+    ok, image_output = ensure_image(image_ref)
+    if not ok:
+        raise VpsTypeError(
+            f"Could not prepare the image '{image_ref}': {image_output}"
+        )
     args = [binary, "launch", image_ref, name]
     if vps_type == "kvm":
         args.append("--vm")
+    if pool_name and pool_name != "default":
+        args += ["-s", pool_name]
     args += [
         "-c", f"limits.cpu={int(vcpus)}",
         "-c", f"limits.memory={int(memory_mb)}MiB",
@@ -205,9 +355,18 @@ def create_instance(name: str, image_alias: str, vps_type: str = DEFAULT_TYPE,
     if vps_type == "lxc":
         # Matches the behaviour of the existing container creation path.
         args += ["-c", "security.privileged=true"]
-    args += ["-d", f"root,size={int(disk_gb)}GiB"]
+    if pool_supports_size(pool_driver):
+        args += ["-d", f"root,size={int(disk_gb)}GiB"]
     code, output = _run(args, timeout=900)
-    if code != 0 and vps_type == "kvm" and image_ref != str(image_alias) and "not found" in output.lower():
+    lowered = output.lower()
+    if code != 0 and "-d" in args and "root,size=" in " ".join(args) and \
+            "size" in lowered and ("not support" in lowered or "custom" in lowered):
+        # Some storage drivers reject a per-instance root size: retry without it.
+        index = args.index("-d")
+        args = args[:index] + args[index + 2:]
+        code, output = _run(args, timeout=900)
+        lowered = output.lower()
+    if code != 0 and image_ref != str(image_alias) and ("not found" in lowered or "no such image" in lowered):
         # The translated remote image does not exist; fall back to the original alias.
         _run([binary, "delete", name, "--force"], timeout=60)
         args[2] = str(image_alias)
@@ -272,6 +431,11 @@ def action(name: str, vps_type: str, operation: str) -> tuple[bool, str]:
     if operation not in {"start", "stop", "restart"}:
         raise ValueError("Unsupported action")
     if vps_type == "nonkvm":
+        if operation == "restart":
+            # The QEMU helper only knows start/stop; a restart is both.
+            stop_code, stop_out = _run_nonkvm(["stop", "--name", name])
+            start_code, start_out = _run_nonkvm(["start", "--name", name])
+            return start_code == 0, (start_out or stop_out)[-800:]
         code, output = _run_nonkvm([operation, "--name", name])
         return code == 0, output[-800:]
     binary = cli()
@@ -332,7 +496,11 @@ def kvm_access(name: str, vps_type: str, enabled: bool) -> tuple[bool, str]:
 
 def instance_ip(name: str, vps_type: str) -> str:
     if normalise_type(vps_type) == "nonkvm":
-        return "127.0.0.1"
+        code, output = _run_nonkvm(["ip", "--name", name], timeout=30)
+        value = output.strip().splitlines()[-1].strip() if (code == 0 and output.strip()) else ""
+        if value in {"", "0.0.0.0", "::", "[::]"}:
+            return "127.0.0.1"
+        return value
     binary = cli()
     if not binary:
         return ""

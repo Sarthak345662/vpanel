@@ -10954,10 +10954,23 @@ def terminal_create_session(vps_id):
         fcntl.ioctl(master_fd, termios.TIOCSWINSZ, win)
     except:
         pass
-    proc = subprocess.Popen(['incus', 'exec', cid, '--', '/bin/sh', '-c', 'TERM=xterm-256color exec /bin/bash'], stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
+    askpass_path = None
+    if omega_vps_kind(cid) == "nonkvm":
+        # A Non-KVM VPS is not an Incus instance: open the shell over the
+        # forwarded SSH port that scripts/omega-nonkvm.sh already exposes.
+        argv, env, askpass_path = _omega_nonkvm_terminal(cid)
+        if not argv:
+            os.close(master_fd)
+            os.close(slave_fd)
+            return (jsonify({'error': 'This Non-KVM VPS has no SSH port yet. Start it once from the panel and retry.'}), 400)
+        proc = subprocess.Popen(argv, stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                                close_fds=True, env=env, start_new_session=True)
+    else:
+        proc = subprocess.Popen(['incus', 'exec', cid, '--', '/bin/sh', '-c', 'TERM=xterm-256color exec /bin/bash'], stdin=slave_fd, stdout=slave_fd, stderr=slave_fd, close_fds=True)
     os.close(slave_fd)
     session_id = str(uuid.uuid4())
-    terminal_sessions[session_id] = {'master_fd': master_fd, 'proc': proc, 'vps_id': vps_id}
+    terminal_sessions[session_id] = {'master_fd': master_fd, 'proc': proc, 'vps_id': vps_id,
+                                     'askpass': askpass_path}
     def _cleanup():
         proc.wait()
         time.sleep(0.3)
@@ -10965,6 +10978,11 @@ def terminal_create_session(vps_id):
             os.close(master_fd)
         except:
             pass
+        if askpass_path:
+            try:
+                os.unlink(askpass_path)
+            except OSError:
+                pass
         terminal_sessions.pop(session_id, None)
     threading.Thread(target=_cleanup, daemon=True).start()
     return jsonify({'session_id': session_id})
@@ -14262,6 +14280,9 @@ def _create_vps_for_user(user, data):
         disk = f"{disk_gb}GB"
         image = _os_image_alias(os_type)
         instance_info = {}
+        _omega_report(data, 18, f"Creating the {_OMEGA_TYPE_LABELS.get(vps_type, vps_type)} "
+                                f"on {node['name']}… (the first boot can take a few minutes)",
+                      vps_type=vps_type)
         if node["is_local"]:
             if vps_type == "lxc":
                 if not _vps_types.capabilities()["incus"]:
@@ -14283,10 +14304,15 @@ def _create_vps_for_user(user, data):
             if status not in (200, 201) or result.get("error"):
                 raise RuntimeError(result.get("error", "Remote node create failed"))
             container_id = result["container_id"]
+            if vps_type == "nonkvm":
+                # The node prepares the QEMU guest and returns its SSH details.
+                instance_info = result
 
+        _omega_report(data, 62, "Instance created — configuring root access and SSH…",
+                      vps_type=vps_type)
         password = secrets.token_urlsafe(16)
         ssh_link = ""
-        if node["is_local"] and vps_type == "nonkvm":
+        if vps_type == "nonkvm":
             password = instance_info.get("ssh_password") or password
             ssh_host = str(instance_info.get("ssh_host") or "").strip()
             if not ssh_host or ssh_host in ("127.0.0.1", "localhost", "0.0.0.0", "::1"):
@@ -14322,6 +14348,7 @@ def _create_vps_for_user(user, data):
             password = result.get("password") or password
             ssh_link = result.get("ssh_command") or ""
 
+        _omega_report(data, 86, "Saving the VPS record…", vps_type=vps_type)
         settings = get_settings()
         default_days = settings["default_vps_days"] if "default_vps_days" in settings.keys() else 0
         expires_at = None
@@ -17649,3 +17676,719 @@ try:
                       templates=EMBEDDED_TEMPLATES, add_log=add_log)
 except Exception:
     app.logger.exception("Billing module could not be registered")
+
+
+# ===========================================================================
+# VPS backend reliability patch
+#
+# Symptoms this fixes on a real host:
+#   * a Non-KVM (QEMU TCG) VPS showed state "unknown" and every power action
+#     failed, because the panel asked Incus about an instance that does not
+#     live in Incus at all;
+#   * LXC creation looked frozen: the browser sat on the "New VPS" dialog for
+#     minutes while the image was downloaded and SSH was provisioned;
+#   * no creation animation was shown, because the create POST is a blocking
+#     page navigation.
+#
+# The patch adds one backend-aware status/action layer plus an asynchronous
+# creation job with real progress that the dialog polls.
+# ===========================================================================
+
+def _omega_vps_backend_module():
+    try:
+        from core import vps_types as _module
+    except ImportError:  # pragma: no cover - flat layout
+        import vps_types as _module
+    return _module
+
+
+_OMEGA_TYPE_LABELS = {
+    "lxc": "LXC container",
+    "kvm": "KVM virtual machine",
+    "nonkvm": "Non-KVM virtual machine",
+}
+
+
+_omega_kind_cache = {}
+_omega_kind_lock = threading.Lock()
+
+
+def omega_nonkvm_state_dir(name):
+    root = os.environ.get("OMEGA_NONKVM_DIR") or "/var/lib/omega-panel/nonkvm"
+    return os.path.join(root, str(name or "").strip())
+
+
+def omega_nonkvm_on_disk(name):
+    """True when a QEMU/TCG instance with this name exists on the host."""
+    try:
+        return os.path.isfile(os.path.join(omega_nonkvm_state_dir(name), "state.env"))
+    except Exception:
+        return False
+
+
+def omega_vps_kind(container_id, default="lxc"):
+    """Backend (lxc/kvm/nonkvm) for an instance id or name, from the database."""
+    name = str(container_id or "").strip()
+    if not name:
+        return default
+    now = time.time()
+    with _omega_kind_lock:
+        cached = _omega_kind_cache.get(name)
+        if cached and (now - cached[1]) < 20:
+            return cached[0]
+    kind = default
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(vps_type,'lxc') AS t FROM vps "
+                "WHERE container_id=? OR container_name=? ORDER BY id DESC LIMIT 1",
+                (name, name),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row["t"]:
+            kind = str(row["t"]).strip().lower() or default
+    except Exception:
+        kind = default
+    if kind != "nonkvm" and omega_nonkvm_on_disk(name):
+        # Older builds stored every VPS as "lxc" (and some migrations rewrote
+        # empty values to "lxc"), so a QEMU guest could be labelled as an Incus
+        # container and reported as "unknown" forever. The on-disk state is the
+        # truth; use it and repair the row.
+        kind = "nonkvm"
+        try:
+            conn = get_db()
+            try:
+                conn.execute("UPDATE vps SET vps_type='nonkvm' "
+                             "WHERE (container_id=? OR container_name=?) "
+                             "AND COALESCE(vps_type,'') != 'nonkvm'", (name, name))
+                conn.commit()
+            finally:
+                conn.close()
+            add_log("warning", f"Detected Non-KVM backend for {name}; the VPS record was corrected", "vps")
+        except Exception:
+            app.logger.debug("Could not repair the VPS type for %s", name, exc_info=True)
+    with _omega_kind_lock:
+        _omega_kind_cache[name] = (kind, now)
+    return kind
+
+
+def _omega_forget_backend(name):
+    with _omega_kind_lock:
+        _omega_kind_cache.pop(str(name or "").strip(), None)
+
+
+def _omega_nonkvm_state(name):
+    """Live state of a QEMU/TCG VPS: running, stopped, not_found or unknown."""
+    try:
+        info = _omega_vps_backend_module().status(name, "nonkvm")
+        return str(info.get("state") or "unknown").lower()
+    except Exception:
+        app.logger.exception("Could not read Non-KVM state for %s", name)
+        return "unknown"
+
+
+def _omega_nonkvm_call(name, operation):
+    module = _omega_vps_backend_module()
+    if operation == "destroy":
+        ok, message = module.remove(name, "nonkvm")
+        if ok:
+            _omega_forget_backend(name)
+        return ok, message
+    ok, message = module.action(name, "nonkvm", operation)
+    if not ok:
+        raise RuntimeError(message or f"Non-KVM {operation} failed")
+    return ok, message
+
+
+# --- State -----------------------------------------------------------------
+
+_omega_lxc_status_base = lxc_status
+
+
+def lxc_status(name):
+    if omega_vps_kind(name) == "nonkvm":
+        return _omega_nonkvm_state(name)
+    return _omega_lxc_status_base(name)
+
+
+# --- Power actions ---------------------------------------------------------
+
+_omega_lxc_start_base = lxc_start
+_omega_lxc_stop_base = lxc_stop
+_omega_lxc_restart_base = lxc_restart
+_omega_lxc_destroy_base = lxc_destroy
+
+
+def lxc_start(name):
+    if omega_vps_kind(name) == "nonkvm":
+        _omega_nonkvm_call(name, "start")
+        return
+    return _omega_lxc_start_base(name)
+
+
+def lxc_stop(name, timeout=60):
+    if omega_vps_kind(name) == "nonkvm":
+        _omega_nonkvm_call(name, "stop")
+        return
+    return _omega_lxc_stop_base(name, timeout=timeout)
+
+
+def lxc_restart(name):
+    if omega_vps_kind(name) == "nonkvm":
+        _omega_nonkvm_call(name, "restart")
+        return
+    return _omega_lxc_restart_base(name)
+
+
+def lxc_destroy(name):
+    if omega_vps_kind(name) == "nonkvm":
+        ok, message = _omega_nonkvm_call(name, "destroy")
+        if not ok:
+            raise RuntimeError(message or "Could not destroy the Non-KVM VPS")
+        return
+    return _omega_lxc_destroy_base(name)
+
+
+_omega_lxc_get_ip_base = lxc_get_ip
+
+
+def lxc_get_ip(name):
+    if omega_vps_kind(name) == "nonkvm":
+        try:
+            return _omega_vps_backend_module().instance_ip(name, "nonkvm")
+        except Exception:
+            return "127.0.0.1"
+    return _omega_lxc_get_ip_base(name)
+
+
+# --- Shell / exec ----------------------------------------------------------
+#
+# A Non-KVM VPS has no Incus instance to attach to, so the panel reaches it over
+# the host-forwarded SSH port that scripts/omega-nonkvm.sh already sets up.
+
+def _omega_nonkvm_credentials(name):
+    password = ""
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT ssh_password FROM vps WHERE container_id=? OR container_name=? "
+                "ORDER BY id DESC LIMIT 1",
+                (name, name),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            password = str(row["ssh_password"] or "")
+    except Exception:
+        app.logger.exception("Could not read Non-KVM credentials for %s", name)
+    port = ""
+    try:
+        info = _omega_vps_backend_module().status(name, "nonkvm")
+        port = str(info.get("ssh_port") or "")
+    except Exception:
+        port = ""
+    return password, port
+
+
+def _omega_ssh_exec(port, password, command, timeout=60):
+    """Run a command inside a Non-KVM VPS over SSH without extra packages."""
+    ssh = shutil.which("ssh")
+    if not ssh:
+        return 127, b"ssh client is not installed on the panel host"
+    if not port:
+        return 1, b"no SSH port is recorded for this VPS; start it from the panel first"
+    askpass = None
+    try:
+        fd, askpass = tempfile.mkstemp(prefix="omega-askpass-", suffix=".sh")
+        with os.fdopen(fd, "w") as handle:
+            handle.write('#!/bin/sh\nprintf "%s\\n" "$OMEGA_SSH_PASSWORD"\n')
+        os.chmod(askpass, 0o700)
+        env = dict(os.environ)
+        env.update({
+            "OMEGA_SSH_PASSWORD": password,
+            "SSH_ASKPASS": askpass,
+            "SSH_ASKPASS_REQUIRE": "force",
+            "DISPLAY": env.get("DISPLAY") or ":0",
+        })
+        cmd = [ssh, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+               "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
+               "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=10",
+               "-p", str(port), "root@127.0.0.1", command]
+        proc = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              timeout=max(5, int(timeout)))
+        return proc.returncode, proc.stdout or b""
+    except subprocess.TimeoutExpired:
+        return 124, ("Command timed out after %ss" % timeout).encode()
+    except Exception as exc:  # pragma: no cover - host dependent
+        return 1, str(exc).encode()
+    finally:
+        if askpass:
+            try:
+                os.unlink(askpass)
+            except OSError:
+                pass
+
+
+def _omega_nonkvm_terminal(name):
+    """argv/env for an interactive shell inside a Non-KVM VPS, or (None, None, None)."""
+    ssh = shutil.which("ssh")
+    password, port = _omega_nonkvm_credentials(name)
+    if not ssh or not port:
+        return None, None, None
+    try:
+        fd, askpass = tempfile.mkstemp(prefix="omega-askpass-", suffix=".sh")
+        with os.fdopen(fd, "w") as handle:
+            handle.write('#!/bin/sh\nprintf "%s\\n" "$OMEGA_SSH_PASSWORD"\n')
+        os.chmod(askpass, 0o700)
+    except Exception:
+        app.logger.exception("Could not prepare the SSH askpass helper")
+        return None, None, None
+    env = dict(os.environ)
+    env.update({
+        "OMEGA_SSH_PASSWORD": password,
+        "SSH_ASKPASS": askpass,
+        "SSH_ASKPASS_REQUIRE": "force",
+        "DISPLAY": env.get("DISPLAY") or ":0",
+        "TERM": "xterm-256color",
+    })
+    argv = [ssh, "-tt", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
+            "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=15",
+            "-o", "ServerAliveInterval=30", "-p", str(port), "root@127.0.0.1",
+            "TERM=xterm-256color exec /bin/bash -l"]
+    return argv, env, askpass
+
+
+_omega_lxc_attach_base = lxc_attach
+
+
+def lxc_attach(name, command, timeout=60, **kwargs):
+    if omega_vps_kind(name) == "nonkvm":
+        password, port = _omega_nonkvm_credentials(name)
+        return _omega_ssh_exec(port, password, command, timeout=timeout)
+    return _omega_lxc_attach_base(name, command, timeout=timeout, **kwargs)
+
+
+# --- LXC creation ----------------------------------------------------------
+#
+# The old REST payload always requested a root disk of ``size=20GiB`` on a pool
+# called ``default``. On a host initialised with the ``dir`` driver (Incus'
+# default for ``incus admin init --auto``) that size is unsupported, and on a
+# host with another pool name the request failed outright. Creation now uses the
+# host's real pool/driver, makes sure the image exists first, and surfaces the
+# launcher's error text instead of hanging.
+
+_omega_lxc_create_base = lxc_create
+
+
+def lxc_create(name, os_type='ubuntu-22.04', ram='2GB', cpu='1 vCPU', disk='20GB', nesting=False):
+    module = _omega_vps_backend_module()
+    try:
+        memory_mb = max(256, int(_parse_ram_to_bytes(ram) / 1048576))
+    except Exception:
+        memory_mb = 2048
+    try:
+        vcpus = max(1, int(_parse_cpu_count(cpu)))
+    except Exception:
+        vcpus = 1
+    try:
+        disk_gb = max(5, int(float(str(disk).replace('GB', '').strip())))
+    except Exception:
+        disk_gb = 20
+    aliases = []
+    try:
+        aliases = _omega_image_aliases(os_type)
+    except Exception:
+        aliases = []
+    image_alias = aliases[-1] if aliases else str(os_type or 'ubuntu-22.04')
+    try:
+        cached_aliases = module._local_image_aliases()
+        for candidate in aliases:
+            if candidate in cached_aliases:
+                image_alias = candidate
+                break
+    except Exception:
+        pass
+    try:
+        info = module.create_instance(
+            name, image_alias, 'lxc', bool(nesting), vcpus, memory_mb, disk_gb
+        )
+    except Exception as exc:
+        message = str(exc)
+        if 'not initialised' in message or 'not initialized' in message:
+            raise RuntimeError(message) from exc
+        # Keep the legacy REST path as a fallback for hosts where the CLI is not
+        # usable by the service account but the socket is.
+        app.logger.warning("CLI container create failed for %s: %s", name, message)
+        try:
+            return _omega_lxc_create_base(name, os_type, ram, cpu, disk)
+        except Exception:
+            raise RuntimeError(message) from exc
+    try:
+        _lxc_fix_networking(name)
+    except Exception:
+        app.logger.debug("Container networking helper failed for %s", name, exc_info=True)
+    return info.get('name') or name
+
+
+# ---------------------------------------------------------------------------
+# Asynchronous VPS creation with real progress
+# ---------------------------------------------------------------------------
+
+_OMEGA_CREATE_STEPS = {
+    'lxc': "Creating the LXC container (downloading the image on first use)…",
+    'kvm': "Creating the KVM virtual machine…",
+    'nonkvm': "Creating the Non-KVM virtual machine (software emulation, slow)…",
+}
+
+
+def omega_create_jobs_schema(conn=None):
+    own = conn is None
+    if own:
+        conn = get_db()
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS vps_create_jobs (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   admin_id INTEGER,
+                   user_id INTEGER,
+                   vps_id INTEGER,
+                   vps_type TEXT DEFAULT 'lxc',
+                   status TEXT DEFAULT 'queued',
+                   progress INTEGER DEFAULT 0,
+                   message TEXT DEFAULT '',
+                   error TEXT DEFAULT '',
+                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def _omega_job_update(job_id, **fields):
+    if not job_id:
+        return
+    fields['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    sql = ", ".join(f"{key}=?" for key in fields)
+    try:
+        conn = get_db()
+        try:
+            conn.execute(f"UPDATE vps_create_jobs SET {sql} WHERE id=?",
+                         (*fields.values(), int(job_id)))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        app.logger.exception("Could not update create job %s", job_id)
+
+
+def _omega_report(data, progress, message, **extra):
+    """Progress hook used by _create_vps_for_user for panel/bot creations."""
+    job_id = (data or {}).get('_job_id')
+    if not job_id:
+        return
+    _omega_job_update(job_id, progress=int(progress), message=str(message)[:300],
+                      status='running', **extra)
+
+
+def _omega_run_create_job(job_id, user_row, payload, base_url):
+    def worker():
+        with app.test_request_context("/", base_url=base_url):
+            try:
+                _omega_job_update(job_id, status='running', progress=8,
+                                  message='Checking node capacity…')
+                creds = _create_vps_for_user(user_row, dict(payload, _job_id=job_id))
+                _omega_job_update(job_id, status='done', progress=100,
+                                  message='VPS ready', vps_id=creds.get('vps_id'))
+                _omega_forget_backend(creds.get('name'))
+            except Exception as exc:
+                app.logger.exception("Async VPS creation failed (job %s)", job_id)
+                _omega_job_update(job_id, status='error', progress=100,
+                                  message=str(exc)[:300], error=str(exc)[:3000])
+    thread = threading.Thread(target=worker, name=f"omega-create-{job_id}", daemon=True)
+    thread.start()
+
+
+def _omega_wants_async_create():
+    return (request.headers.get('X-Omega-Async') == '1'
+            or 'application/json' in (request.headers.get('Accept') or ''))
+
+
+_omega_create_vps_view = app.view_functions.get('admin_create_vps')
+
+
+def omega_admin_create_vps():
+    if request.method != 'POST' or not _omega_wants_async_create():
+        return _admin_create_vps_with_notifications()
+    if 'user_id' not in session:
+        return jsonify({'error': 'Please login first'}), 401
+    conn = get_db()
+    try:
+        admin_user = conn.execute(
+            "SELECT is_admin,is_banned FROM users WHERE id=?", (session['user_id'],)
+        ).fetchone()
+        user = conn.execute("SELECT * FROM users WHERE id=?",
+                            (int(request.form.get('user_id') or 0),)).fetchone()
+    finally:
+        conn.close()
+    if not admin_user or admin_user['is_banned'] or not admin_user['is_admin']:
+        return jsonify({'error': 'Admin access required'}), 403
+    if not user:
+        return jsonify({'error': 'Select an existing user.'}), 400
+    try:
+        payload = {
+            'os_type': (request.form.get('os_type') or 'ubuntu-22.04').strip(),
+            'ram_mb': int(request.form.get('ram') or 2048),
+            'cpu': int(request.form.get('cpu') or 1),
+            'disk_gb': int(request.form.get('disk') or 20),
+            'node_id': int(request.form.get('node_id') or 0),
+            'server_type': (request.form.get('server_type') or 'shared').strip().lower(),
+            'max_backups': int(request.form.get('max_backups') or 0),
+            'vps_type': (request.form.get('vps_type') or 'lxc').strip().lower(),
+            'nesting': bool(request.form.get('nesting')),
+        }
+    except (TypeError, ValueError):
+        return jsonify({'error': 'RAM, CPU, disk and backups must be numbers.'}), 400
+    if not payload['node_id']:
+        return jsonify({'error': 'Select a node.'}), 400
+    omega_create_jobs_schema()
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            """INSERT INTO vps_create_jobs(admin_id, user_id, vps_type, status, progress, message)
+               VALUES (?,?,?,?,?,?)""",
+            (session['user_id'], user['id'], payload['vps_type'], 'queued', 4,
+             _OMEGA_CREATE_STEPS.get(payload['vps_type'], 'Queueing the creation…')),
+        )
+        conn.commit()
+        job_id = cur.lastrowid
+    finally:
+        conn.close()
+    base_url = ((_omega_settings_dict().get('panel_public_url') or 'http://localhost:5000').rstrip('/'))
+    _omega_run_create_job(job_id, user, payload, base_url)
+    return jsonify({'ok': True, 'job_id': job_id, 'vps_type': payload['vps_type']})
+
+
+if _omega_create_vps_view is not None:
+    app.view_functions['admin_create_vps'] = limiter.limit(
+        lambda: get_rate_limit('heavy')
+    )(omega_admin_create_vps)
+
+
+@app.route('/api/vps-create/<int:job_id>')
+@login_required
+def omega_vps_create_job(job_id):
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM vps_create_jobs WHERE id=?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({'error': 'Job not found'}), 404
+    if int(row['admin_id'] or 0) != int(session['user_id']) and not session.get('is_admin'):
+        return jsonify({'error': 'Not allowed'}), 403
+    vps_id = row['vps_id']
+    return jsonify({
+        'id': row['id'],
+        'status': row['status'],
+        'progress': int(row['progress'] or 0),
+        'message': row['message'] or '',
+        'error': row['error'] or '',
+        'vps_id': vps_id,
+        'url': url_for('vps_detail', vps_id=vps_id) if vps_id else '',
+    })
+
+
+try:
+    omega_create_jobs_schema()
+except Exception:
+    app.logger.exception("Could not prepare the VPS creation job table")
+
+# ---------------------------------------------------------------------------
+# Creation UI: a real progress dialog that polls the async job
+# ---------------------------------------------------------------------------
+_OMEGA_CREATE_UI = r"""
+<style id="omega-create-ui-style">
+#omega-create-progress{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(6,4,14,.74);backdrop-filter:blur(9px);opacity:0;pointer-events:none;transition:opacity .22s ease}
+#omega-create-progress.show{opacity:1;pointer-events:auto}
+#omega-create-progress .ocp-card{width:min(430px,92vw);padding:26px 24px 22px;border-radius:22px;text-align:center;color:#f5f2ff;background:linear-gradient(160deg,rgba(255,255,255,.08),rgba(255,255,255,.015));border:1px solid rgba(168,85,247,.38);box-shadow:0 34px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.04) inset;transform:translateY(10px) scale(.98);transition:transform .28s cubic-bezier(.2,.9,.3,1.2)}
+#omega-create-progress.show .ocp-card{transform:translateY(0) scale(1)}
+.ocp-ring{position:relative;width:76px;height:76px;margin:0 auto 16px}
+.ocp-ring span{position:absolute;inset:0;border-radius:50%;border:2px solid transparent;border-top-color:#a855f7;border-right-color:#22d3ee;animation:ocp-spin 1.5s linear infinite}
+.ocp-ring span:nth-child(2){inset:9px;border-top-color:#22d3ee;border-right-color:#a855f7;animation-duration:2.1s;animation-direction:reverse}
+.ocp-ring span:nth-child(3){inset:18px;border-top-color:#34d399;border-right-color:transparent;animation-duration:2.8s}
+.ocp-ring b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:22px;filter:drop-shadow(0 0 12px rgba(168,85,247,.85))}
+@keyframes ocp-spin{to{transform:rotate(360deg)}}
+#omega-create-progress h3{margin:0 0 6px;font-size:17px;letter-spacing:-.2px}
+#omega-create-progress .ocp-step{margin:0 0 14px;font-size:12.5px;color:#c9bde6;min-height:34px;line-height:1.45}
+.ocp-bar{height:7px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden;margin-bottom:8px}
+.ocp-bar i{display:block;height:100%;width:4%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#a855f7,#f472b6);background-size:220% 100%;transition:width .6s ease;animation:ocp-flow 2.4s linear infinite}
+@keyframes ocp-flow{to{background-position:220% 0}}
+.ocp-pct{font-size:11px;color:#9d91bb;letter-spacing:.6px}
+.ocp-err{margin:12px 0 0;padding:10px 12px;border-radius:12px;background:rgba(255,100,124,.12);border:1px solid rgba(255,100,124,.4);color:#ffb3c1;font-size:12px;text-align:left;max-height:150px;overflow:auto;white-space:pre-wrap;display:none}
+.ocp-actions{display:none;gap:8px;margin-top:14px}
+.ocp-actions button{flex:1;padding:10px;border-radius:11px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#f5f2ff;font-weight:600;cursor:pointer}
+.ocp-actions button.primary{background:linear-gradient(135deg,#a855f7,#6d28d9);border-color:transparent}
+#omega-create-progress.done .ocp-ring span{animation:none;border-color:rgba(52,211,153,.55)}
+#omega-create-progress.done .ocp-ring b{color:#34d399}
+</style>
+<div id="omega-create-progress" role="status" aria-live="polite">
+  <div class="ocp-card">
+    <div class="ocp-ring"><span></span><span></span><span></span><b>&#9889;</b></div>
+    <h3>Creating your VPS&hellip;</h3>
+    <p class="ocp-step">Starting&hellip;</p>
+    <div class="ocp-bar"><i></i></div>
+    <div class="ocp-pct">0%</div>
+    <div class="ocp-err"></div>
+    <div class="ocp-actions"><button type="button" class="primary" data-act="retry">Try again</button><button type="button" data-act="close">Close</button></div>
+  </div>
+</div>
+<script>
+(function(){
+  if (window.__omegaCreateProgressUI) return;
+  window.__omegaCreateProgressUI = true;
+  window.__omegaCreateAsync = true;
+  var box = document.getElementById('omega-create-progress');
+  if (!box) return;
+  var card = box.querySelector('.ocp-card');
+  var title = box.querySelector('h3');
+  var step = box.querySelector('.ocp-step');
+  var bar = box.querySelector('.ocp-bar i');
+  var pct = box.querySelector('.ocp-pct');
+  var errBox = box.querySelector('.ocp-err');
+  var actions = box.querySelector('.ocp-actions');
+  var timer = null;
+  var started = 0;
+  function reset(){
+    title.textContent = 'Creating your VPS\u2026';
+    step.textContent = 'Starting\u2026';
+    bar.style.width = '4%';
+    pct.textContent = '0%';
+    errBox.style.display = 'none';
+    errBox.textContent = '';
+    actions.style.display = 'none';
+    box.classList.remove('done');
+  }
+  function open(){ reset(); box.classList.add('show'); started = Date.now(); }
+  function close(){ if (timer) { clearTimeout(timer); timer = null; } box.classList.remove('show'); }
+  function paint(job){
+    var value = Math.max(4, Math.min(100, job.progress || 0));
+    bar.style.width = value + '%';
+    pct.textContent = value + '%';
+    if (job.message) step.textContent = job.message;
+    if (job.status === 'done') {
+      box.classList.add('done');
+      title.textContent = 'VPS ready \ud83c\udf89';
+      step.textContent = 'Opening the VPS page\u2026';
+      bar.style.width = '100%';
+      pct.textContent = '100%';
+      setTimeout(function(){ window.location.href = job.url || '/admin'; }, 900);
+      return;
+    }
+    if (job.status === 'error') {
+      title.textContent = 'Creation failed';
+      step.textContent = job.message || 'The node rejected the request.';
+      errBox.textContent = job.error || job.message || '';
+      errBox.style.display = 'block';
+      actions.style.display = 'flex';
+      return;
+    }
+    if (Date.now() - started > 1200000) {
+      step.textContent = (job.message || 'Still working') + ' (taking longer than usual)';
+    }
+    timer = setTimeout(function(){ poll(job.id); }, 1300);
+  }
+  function poll(id){
+    fetch('/api/vps-create/' + id, {headers: {'Accept': 'application/json'}, cache: 'no-store'})
+      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(paint)
+      .catch(function(){
+        step.textContent = 'Connection hiccup \u2014 retrying\u2026';
+        timer = setTimeout(function(){ poll(id); }, 2500);
+      });
+  }
+  actions.addEventListener('click', function(ev){
+    var act = ev.target && ev.target.getAttribute('data-act');
+    if (act === 'close') close();
+    if (act === 'retry') { close(); var f = document.querySelector('form[action*="create-vps"]'); if (f) f.querySelector('button[type=submit]').click(); }
+  });
+  function form(){
+    return document.querySelector('form[action*="create-vps"][method="post"], form[action*="create-vps"]');
+  }
+  document.addEventListener('submit', function(ev){
+    var f = ev.target;
+    if (!f || !f.getAttribute) return;
+    var action = (f.getAttribute('action') || '').toLowerCase();
+    var isAsync = action.indexOf('create-vps') >= 0;
+    var isTyped = action.indexOf('vps-types') >= 0;
+    if (!isAsync && !isTyped) return;
+    if (ev.defaultPrevented) return;
+    if (!isAsync) {
+      // The typed-create page posts normally; keep the animation visible while
+      // the browser waits for the (blocking) node.
+      open();
+      step.textContent = 'This can take a few minutes while the image is prepared.';
+      bar.style.width = '35%';
+      pct.textContent = 'working';
+      return;
+    }
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    var button = f.querySelector('button[type=submit]');
+    if (button) { button.disabled = true; button.dataset.label = button.textContent; button.textContent = 'Creating\u2026'; }
+    open();
+    fetch(f.getAttribute('action') || window.location.pathname, {
+      method: 'POST', body: new FormData(f), headers: {'X-Omega-Async': '1', 'Accept': 'application/json'}, credentials: 'same-origin'
+    }).then(function(r){
+      var type = r.headers.get('content-type') || '';
+      if (type.indexOf('application/json') < 0) { f.submit(); return null; }
+      return r.json().then(function(data){
+        if (!r.ok || !data.job_id) throw new Error(data.error || ('HTTP ' + r.status));
+        poll(data.job_id);
+        return null;
+      });
+    }).catch(function(err){
+      title.textContent = 'Creation failed';
+      step.textContent = 'The panel rejected the request.';
+      errBox.textContent = String(err && err.message ? err.message : err);
+      errBox.style.display = 'block';
+      actions.style.display = 'flex';
+      if (button) { button.disabled = false; button.textContent = button.dataset.label || 'Deploy VPS'; }
+    });
+  }, true);
+})();
+</script>
+"""
+
+def omega_install_create_ui():
+    """Add the animated create dialog to every page that can deploy a VPS."""
+    for template_name in ("admin.html", "features.html", "admin_vps_types.html"):
+        html = EMBEDDED_TEMPLATES.get(template_name)
+        if not isinstance(html, str) or "omega-create-progress" in html:
+            continue
+        for anchor in ("    {{ overlay() }}\n", "{{ overlay() }}"):
+            if anchor in html:
+                EMBEDDED_TEMPLATES[template_name] = html.replace(
+                    anchor, _OMEGA_CREATE_UI + anchor, 1
+                )
+                break
+        else:
+            if "</body>" in html:
+                EMBEDDED_TEMPLATES[template_name] = html.replace(
+                    "</body>", _OMEGA_CREATE_UI + "</body>", 1
+                )
+            else:
+                EMBEDDED_TEMPLATES[template_name] = html + _OMEGA_CREATE_UI
+
+
+try:
+    omega_install_create_ui()
+except Exception:
+    app.logger.exception("Could not install the VPS creation progress UI")

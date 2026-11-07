@@ -55,6 +55,8 @@
   document.addEventListener('submit', function(ev){
     const form = ev.target;
     if (!form || !isCreate(form)) return;
+    // The panel ships its own job-driven progress dialog for VPS creation.
+    if (window.__omegaCreateAsync) return;
     try { sessionStorage.setItem('omega:pending-create', '1'); } catch (e) {}
     overlay();
   }, true);
@@ -77,6 +79,7 @@
     setTimeout(function(){ el.classList.remove('show'); setTimeout(function(){ el.remove(); }, 700); }, 2800);
   }
   window.addEventListener('load', function(){
+    if (window.__omegaCreateAsync) return;
     let pending = null;
     try { pending = sessionStorage.getItem('omega:pending-create'); } catch (e) {}
     if (pending !== '1') return;
