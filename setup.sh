@@ -47,7 +47,7 @@ if command -v apt-get >/dev/null 2>&1; then
     cpu-checker qemu-kvm qemu-system-x86 qemu-utils cloud-image-utils \
     libvirt-daemon-system libvirt-clients \
     bridge-utils virtinst virt-manager
-  systemctl enable --now libvirtd 2>/dev/null || systemctl enable --now virtqemud 2>/dev/null || true
+  timeout 90 systemctl enable --now libvirtd 2>/dev/null || timeout 90 systemctl enable --now virtqemud 2>/dev/null || true
 elif command -v dnf >/dev/null 2>&1; then
   install_dnf ca-certificates curl wget git jq python3 python3-pip sudo openssl \
     qemu-kvm qemu-img libvirt libvirt-daemon-config-network libvirt-client bridge-utils virt-install
@@ -80,11 +80,22 @@ fi
 
 systemctl enable --now incus 2>/dev/null || systemctl enable --now incus.service 2>/dev/null || true
 if command -v incus >/dev/null 2>&1; then
-  if ! incus info >/dev/null 2>&1; then
-    incus admin init --auto || incus admin init --minimal
+  # Root normally reaches the socket right away; give it a moment instead of
+  # asking the daemon something it is not ready for yet.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    timeout 10 incus info >/dev/null 2>&1 && break
+    sleep 2
+  done
+  if ! timeout 10 incus info >/dev/null 2>&1; then
+    # `incus admin init` is the step that silently hangs an unattended update:
+    # it can wait on stdin or on a daemon that never comes up. Close stdin and
+    # cap the runtime so the update always continues.
+    timeout 420 incus admin init --auto </dev/null >/dev/null 2>&1 \
+      || timeout 420 incus admin init --minimal </dev/null >/dev/null 2>&1 \
+      || echo "[Vizion V4] WARNING: Incus is not initialized; run 'sudo incus admin init --auto' manually." >&2
   fi
-  incus config set images.auto_update_cached true || true
-  incus config set images.auto_update_interval 6 || true
+  timeout 15 incus config set images.auto_update_cached true </dev/null >/dev/null 2>&1 || true
+  timeout 15 incus config set images.auto_update_interval 6 </dev/null >/dev/null 2>&1 || true
 fi
 
 # Optional LXD compatibility. Never purge Incus/LXC packages to make this happen.
