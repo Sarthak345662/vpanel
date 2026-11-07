@@ -18224,12 +18224,13 @@ _OMEGA_CREATE_UI = r"""
 #omega-create-progress.show{opacity:1;pointer-events:auto}
 #omega-create-progress .ocp-card{width:min(430px,92vw);padding:26px 24px 22px;border-radius:22px;text-align:center;color:#f5f2ff;background:linear-gradient(160deg,rgba(255,255,255,.08),rgba(255,255,255,.015));border:1px solid rgba(168,85,247,.38);box-shadow:0 34px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.04) inset;transform:translateY(10px) scale(.98);transition:transform .28s cubic-bezier(.2,.9,.3,1.2)}
 #omega-create-progress.show .ocp-card{transform:translateY(0) scale(1)}
-.ocp-ring{position:relative;width:76px;height:76px;margin:0 auto 16px}
-.ocp-ring span{position:absolute;inset:0;border-radius:50%;border:2px solid transparent;border-top-color:#a855f7;border-right-color:#22d3ee;animation:ocp-spin 1.5s linear infinite}
-.ocp-ring span:nth-child(2){inset:9px;border-top-color:#22d3ee;border-right-color:#a855f7;animation-duration:2.1s;animation-direction:reverse}
-.ocp-ring span:nth-child(3){inset:18px;border-top-color:#34d399;border-right-color:transparent;animation-duration:2.8s}
-.ocp-ring b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:22px;filter:drop-shadow(0 0 12px rgba(168,85,247,.85))}
+.ocp-ring{position:relative;width:84px;height:84px;margin:0 auto 16px}
+.ocp-ring span:first-child{position:absolute;inset:0;border-radius:50%;background:conic-gradient(from 0deg,#22d3ee,#a855f7,#f472b6,#22d3ee);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 8px),#000 calc(100% - 7px));mask:radial-gradient(farthest-side,transparent calc(100% - 8px),#000 calc(100% - 7px));animation:ocp-spin 1s linear infinite;filter:drop-shadow(0 0 12px rgba(168,85,247,.5))}
+.ocp-ring span:nth-child(2){position:absolute;inset:-8px;border-radius:50%;border:1px dashed rgba(255,255,255,.18);animation:ocp-spin 6s linear infinite reverse}
+.ocp-ring span:nth-child(3){position:absolute;inset:-15px;border-radius:50%;border:1px solid transparent;border-top-color:rgba(34,211,238,.4);animation:ocp-spin 3.4s linear infinite}
+.ocp-ring b{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:20px;filter:drop-shadow(0 0 14px rgba(34,211,238,.9));animation:ocp-pulse 1.3s ease-in-out infinite}
 @keyframes ocp-spin{to{transform:rotate(360deg)}}
+@keyframes ocp-pulse{0%,100%{transform:scale(.82);opacity:.7}50%{transform:scale(1);opacity:1}}
 #omega-create-progress h3{margin:0 0 6px;font-size:17px;letter-spacing:-.2px}
 #omega-create-progress .ocp-step{margin:0 0 14px;font-size:12.5px;color:#c9bde6;min-height:34px;line-height:1.45}
 .ocp-bar{height:7px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden;margin-bottom:8px}
