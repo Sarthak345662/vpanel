@@ -16577,25 +16577,53 @@ def _omega_bot_ensure_sshx(vps_id, force=False):
 
         if force:
             lxc_attach(container_id, "pkill -x sshx >/dev/null 2>&1; rm -f /tmp/sshx_output.log", timeout=20)
-        # Install only when missing; keep the SSHX process in the VPS container.
-        command = (
-            'export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"; '
-            'if ! command -v sshx >/dev/null 2>&1; then '
-            'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl); '
-            'curl -fsSL https://sshx.io/get | sh; fi; '
-            'export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:$PATH"; '
-            'command -v sshx >/dev/null 2>&1 || { echo SSHX_INSTALL_FAILED; exit 127; }; '
-            'if ! pgrep -x sshx >/dev/null 2>&1; then '
-            'nohup sshx > /tmp/sshx_output.log 2>&1 </dev/null & fi; '
-            'for i in $(seq 1 20); do '
-            'grep -Eo "https://sshx\\.io/s/[A-Za-z0-9#?=_-]+" /tmp/sshx_output.log 2>/dev/null && exit 0; '
-            'sleep 1; done; cat /tmp/sshx_output.log 2>/dev/null'
-        )
+        # Keep this script simple enough for /bin/sh inside the guest, but never
+        # let it exit non-zero silently: every failure prints a marker and the
+        # tail of its own log, so the panel can show the real reason.
+        script = r"""
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+pkill -f sshx >/dev/null 2>&1 || true
+sleep 1
+rm -f /tmp/sshx_output.log
+if ! command -v curl >/dev/null 2>&1; then
+  (apt-get update -y >/dev/null 2>&1; apt-get install -y curl ca-certificates >/dev/null 2>&1) || true
+fi
+if ! command -v sshx >/dev/null 2>&1; then
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://sshx.io/get | sh >/tmp/sshx_install.log 2>&1 || true
+  else
+    echo "OMEGA_SSHX_NO_CURL"
+  fi
+fi
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+if ! command -v sshx >/dev/null 2>&1; then
+  echo "OMEGA_SSHX_NO_BINARY"
+  tail -n 6 /tmp/sshx_install.log 2>/dev/null
+  exit 0
+fi
+if command -v setsid >/dev/null 2>&1; then
+  setsid sshx >/tmp/sshx_output.log 2>&1 </dev/null &
+else
+  nohup sshx >/tmp/sshx_output.log 2>&1 </dev/null &
+fi
+i=0
+while [ "$i" -lt 40 ]; do
+  grep -Eo "https://sshx\.io/s/[A-Za-z0-9#?=_-]+" /tmp/sshx_output.log 2>/dev/null && exit 0
+  sleep 1
+  i=$((i + 1))
+done
+echo "OMEGA_SSHX_NO_URL"
+sshx --version 2>&1 | head -n 2
+tail -n 20 /tmp/sshx_output.log 2>/dev/null
+exit 0
+"""
+        command = script
         exit_code, output = lxc_attach(container_id, command, timeout=75)
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="ignore")
-        if exit_code != 0 and "sshx.io" not in str(output):
-            raise RuntimeError(f"Could not start SSHX in VPS (exit {exit_code}): {str(output)[-350:]}")
+        if "sshx.io" not in str(output):
+            detail = " ".join(str(output or "").split())[-320:] or "no output from the guest"
+            raise RuntimeError(f"Could not start SSHX in VPS (exit {exit_code}): {detail}")
         match = _re.search(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+", str(output))
         if not match:
             # Some sshx builds write the link after initial startup to the log.
@@ -16604,7 +16632,8 @@ def _omega_bot_ensure_sshx(vps_id, force=False):
                 output = output.decode("utf-8", errors="ignore")
             match = _re.search(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+", str(output))
         if not match:
-            raise RuntimeError("SSHX started, but no share URL was returned. Check sshx output inside the VPS.")
+            detail = " ".join(str(output or "").split())[-320:] or "sshx wrote nothing to /tmp/sshx_output.log"
+            raise RuntimeError(f"SSHX started, but no share URL was returned: {detail}")
         ssh_command = match.group(0)
     else:
         response, code = call_node_api(
@@ -17974,7 +18003,21 @@ def lxc_attach(name, command, timeout=60, **kwargs):
     if omega_vps_kind(name) == "nonkvm":
         password, port = _omega_nonkvm_credentials(name)
         return _omega_ssh_exec(port, password, command, timeout=timeout)
-    return _omega_lxc_attach_base(name, command, timeout=timeout, **kwargs)
+    code, output = _omega_lxc_attach_base(name, command, timeout=timeout, **kwargs)
+    if not output:
+        # The REST exec call reports "record-output" but several Incus builds
+        # answer with log paths the panel cannot read, and a failed operation
+        # returns (1, b"") with nothing to explain it. The CLI hands back real
+        # stdout/stderr, which is what the SSHX and reinstall steps need.
+        cli = shutil.which("incus") or shutil.which("lxc")
+        if cli:
+            try:
+                proc = subprocess.run([cli, "exec", str(name), "--", "/bin/sh", "-c", command],
+                                      capture_output=True, timeout=timeout, check=False)
+                return proc.returncode, (proc.stdout or b"") + (proc.stderr or b"")
+            except Exception:
+                app.logger.debug("CLI exec fallback failed for %s", name, exc_info=True)
+    return code, output
 
 
 # --- LXC creation ----------------------------------------------------------
