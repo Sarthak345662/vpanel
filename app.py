@@ -18528,6 +18528,49 @@ def _omega_incus_status(name):
     return "unknown"
 
 
+def _omega_nonkvm_state_report(name):
+    """What the panel actually has on disk for a Non-KVM guest."""
+    root = omega_nonkvm_state_dir(name)
+    report = {"state_dir": root, "exists": os.path.isdir(root), "files": [], "state_env": {}}
+    try:
+        if report["exists"]:
+            report["files"] = sorted(os.listdir(root))[:25]
+    except Exception:
+        pass
+    try:
+        state_file = os.path.join(root, "state.env")
+        if os.path.isfile(state_file):
+            with open(state_file, encoding="utf-8", errors="ignore") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, value = line.split("=", 1)
+                        report["state_env"][key.strip()] = value.strip()
+    except Exception:
+        pass
+    return report
+
+
+def _omega_host_readiness():
+    """Tools the Non-KVM and SSHX paths need on this host."""
+    root = app.root_path
+    candidates = [os.path.join(root, "scripts", "omega-nonkvm.sh"),
+                  "/opt/omega-panel/scripts/omega-nonkvm.sh",
+                  os.path.join(os.path.dirname(root), "scripts", "omega-nonkvm.sh")]
+    found = [path for path in candidates if os.path.isfile(path)]
+    nonkvm_dir = os.environ.get("OMEGA_NONKVM_DIR") or "/var/lib/omega-panel/nonkvm"
+    return {
+        "qemu_system": shutil.which("qemu-system-x86_64"),
+        "qemu_img": shutil.which("qemu-img"),
+        "cloud_localds": shutil.which("cloud-localds"),
+        "ssh_client": shutil.which("ssh"),
+        "nonkvm_scripts": found,
+        "nonkvm_script_executable": bool(found and os.access(found[0], os.X_OK)),
+        "nonkvm_dir": nonkvm_dir,
+        "nonkvm_dir_writable": os.access(nonkvm_dir, os.W_OK),
+    }
+
+
 @app.route("/admin/diagnostics/incus")
 @admin_required
 def omega_incus_diagnostics():
@@ -18565,6 +18608,7 @@ def omega_incus_diagnostics():
             "rest_state": _omega_lxc_status_base(name) if is_incus else None,
             "cli_state": cli_states.get(name, "") if is_incus else None,
             "nonkvm_state_dir": omega_nonkvm_on_disk(name),
+            "nonkvm": _omega_nonkvm_state_report(name) if kind == "nonkvm" else None,
         })
     try:
         account = getpass.getuser()
@@ -18577,6 +18621,7 @@ def omega_incus_diagnostics():
         "server": {"status": code, "body": str(resp)[:400]},
         "cli_available": cli_available,
         "instances": sorted(cli_states.items())[:100],
+        "host": _omega_host_readiness(),
         "nodes": [dict(node) for node in nodes],
         "vps": vps_report,
     })
