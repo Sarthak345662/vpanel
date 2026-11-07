@@ -169,6 +169,30 @@ GLOBAL_CSS = """
 .x-switchrow{display:flex;gap:10px;flex-wrap:wrap}
 .x-choice{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--bg-input);font-size:13px;cursor:pointer}
 .x-choice input{accent-color:#22c55e}
+
+/* --- Action animations: start / stop / restart / reinstall ------------- */
+.omega-action-overlay{position:fixed;inset:0;z-index:9998;display:flex;align-items:center;justify-content:center;background:rgba(4,7,15,.68);backdrop-filter:blur(7px);opacity:0;pointer-events:none;transition:opacity .22s ease}
+.omega-action-overlay.show{opacity:1;pointer-events:auto}
+.omega-action-overlay .oao-card{min-width:272px;max-width:88vw;padding:26px 28px 22px;border-radius:18px;text-align:center;background:linear-gradient(160deg,rgba(255,255,255,.085),rgba(255,255,255,.02));border:1px solid rgba(168,85,247,.4);box-shadow:0 28px 70px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.04) inset;transform:translateY(8px) scale(.97);transition:transform .26s cubic-bezier(.2,.9,.3,1.2)}
+.omega-action-overlay.show .oao-card{transform:translateY(0) scale(1)}
+.omega-action-overlay h4{margin:14px 0 5px;font-size:15.5px;font-weight:600;color:#f5f2ff;letter-spacing:-.2px}
+.omega-action-overlay p{margin:0 0 14px;font-size:12px;color:#a99fc4;line-height:1.45;min-height:16px}
+.omega-action-overlay .oao-spin{width:58px;height:58px;margin:0 auto;position:relative}
+.omega-action-overlay .oao-spin::before,.omega-action-overlay .oao-spin::after{content:"";position:absolute;border-radius:50%;border:2px solid transparent}
+.omega-action-overlay .oao-spin::before{inset:0;border-top-color:#a855f7;border-right-color:#c084fc;animation:oao-spin .85s linear infinite;box-shadow:0 0 18px rgba(168,85,247,.35)}
+.omega-action-overlay .oao-spin::after{inset:9px;border-bottom-color:#22d3ee;animation:oao-spin 1.4s linear infinite reverse}
+.omega-action-overlay .oao-bar{height:6px;border-radius:99px;background:rgba(255,255,255,.09);overflow:hidden}
+.omega-action-overlay .oao-bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#22d3ee,#a855f7,#f472b6);background-size:220% 100%;animation:oao-flow 1.9s ease-in-out infinite}
+.omega-action-overlay .oao-dots{display:flex;gap:7px;justify-content:center;margin-top:12px}
+.omega-action-overlay .oao-dots i{width:8px;height:8px;border-radius:50%;background:#22d3ee;animation:oao-bounce 1s ease-in-out infinite}
+.omega-action-overlay .oao-dots i:nth-child(2){animation-delay:.15s;background:#a78bfa}
+.omega-action-overlay .oao-dots i:nth-child(3){animation-delay:.3s;background:#34d399}
+@keyframes oao-spin{to{transform:rotate(360deg)}}
+@keyframes oao-flow{0%{width:14%;background-position:0 0}50%{width:82%;background-position:110% 0}100%{width:20%;background-position:220% 0}}
+@keyframes oao-bounce{0%,100%{transform:translateY(0);opacity:.45}50%{transform:translateY(-5px);opacity:1}}
+#omega-mini-spin{position:fixed;top:16px;right:16px;z-index:9997;width:26px;height:26px;border-radius:50%;border:2px solid rgba(255,255,255,.14);border-top-color:#22d3ee;opacity:0;pointer-events:none}
+#omega-mini-spin.show{opacity:1;animation:oao-spin .8s linear infinite}
+@media (prefers-reduced-motion: reduce){.omega-action-overlay .oao-spin::before,.omega-action-overlay .oao-spin::after,#omega-mini-spin.show{animation-duration:3s}.omega-action-overlay .oao-bar i{animation:none;width:60%}}
 """
 
 

@@ -93,6 +93,8 @@
   if (window.__omegaActionAnim) return;
   window.__omegaActionAnim = true;
   const ACTIONS = [
+    {re: /reinstall|rebuild|re-install/, title: 'Reinstalling the operating system…',
+     step: 'The disk is wiped and the image is deployed again. This can take a few minutes.'},
     {re: /\/vps\/\d+\/features/, title: 'Switching the backend…', step: 'Reinstalling the VPS from its image…'},
     {re: /fix-ssh|regen-ssh|ssh/i, title: 'Preparing SSHX access…', step: 'Setting the root password and opening a public port…'},
     {re: /kvm-access|nesting|toggle/i, title: 'Applying setting…', step: 'Updating the VPS and restarting it…'},
@@ -112,8 +114,9 @@
       el = document.createElement('div');
       el.id = 'omega-action-overlay';
       el.className = 'omega-action-overlay';
-      el.innerHTML = '<div class="oao-card"><div class="oao-spin"><i></i></div>' +
-                     '<h4></h4><p></p></div>';
+      el.innerHTML = '<div class="oao-card"><div class="oao-spin"></div>' +
+                     '<h4></h4><p></p><div class="oao-bar"><i></i></div>' +
+                     '<div class="oao-dots"><i></i><i></i><i></i></div></div>';
       document.body.appendChild(el);
     }
     el.querySelector('h4').textContent = a.title;
@@ -128,8 +131,12 @@
   document.addEventListener('submit', function(ev){
     const form = ev.target;
     if (!form || !form.getAttribute) return;
+    // VPS creation has its own job-driven progress dialog.
+    if (window.__omegaCreateAsync && /create-vps|vps-types/.test(form.getAttribute('action') || '')) return;
     const a = match(form.getAttribute('action'));
     if (!a) return;
+    // A blocking POST keeps this page on screen until the node answers, so this
+    // overlay is what the user watches while start / stop / reinstall runs.
     show(a);
   }, true);
   function miniSpin(){
