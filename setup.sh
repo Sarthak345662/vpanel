@@ -271,7 +271,7 @@ systemctl enable --now omega-image-refresh.timer
 # Prove the panel account can actually talk to Incus; without this it silently
 # reports every VPS as "unknown" and nothing can be started or reinstalled.
 if command -v incus >/dev/null 2>&1; then
-  if runuser -u "$SERVICE_USER" -- incus list >/dev/null 2>&1; then
+  if timeout 20 runuser -u "$SERVICE_USER" -- incus list >/dev/null 2>&1; then
     echo "[Vizion V4] Incus socket reachable for ${SERVICE_USER}."
   else
     echo "[Vizion V4] WARNING: ${SERVICE_USER} cannot run 'incus list'." >&2
