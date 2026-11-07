@@ -155,6 +155,27 @@
     if ((form.getAttribute('method') || 'get').toLowerCase() === 'get') return;
     miniSpin();
   }, true);
+  // Some pages drive actions through XMLHttpRequest instead of a form.
+  const nativeXhrOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url){
+    try {
+      const a = match(url);
+      if (a && String(method || 'GET').toUpperCase() !== 'GET') {
+        show(a);
+        this.addEventListener('loadend', function(){ setTimeout(hide, 600); });
+      }
+    } catch (e) {}
+    return nativeXhrOpen.apply(this, arguments);
+  };
+  // <panel-url>?omega-anim=start|stop|restart|reinstall previews the overlay
+  // without touching a VPS, so it can be checked right after an update.
+  try {
+    const wanted = (new URLSearchParams(location.search).get('omega-anim') || '').toLowerCase();
+    if (wanted) {
+      const a = match('/' + wanted);
+      if (a) { show(a); setTimeout(hide, 6000); }
+    }
+  } catch (e) {}
   const nativeFetch = window.fetch;
   if (nativeFetch) {
     window.fetch = function(input, init){
