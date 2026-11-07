@@ -17809,8 +17809,12 @@ _omega_lxc_status_base = lxc_status
 
 def lxc_status(name):
     if omega_vps_kind(name) == "nonkvm":
-        return _omega_nonkvm_state(name)
-    return _omega_lxc_status_base(name)
+        state = _omega_nonkvm_state(name)
+        if state == "unknown" and not omega_nonkvm_on_disk(name):
+            # No QEMU/TCG state on this host: the guest is gone, not "unknown".
+            return "not_found"
+        return state
+    return _omega_incus_status(name)
 
 
 # --- Power actions ---------------------------------------------------------
@@ -18392,3 +18396,144 @@ try:
     omega_install_create_ui()
 except Exception:
     app.logger.exception("Could not install the VPS creation progress UI")
+
+# ---------------------------------------------------------------------------
+# Status hardening + diagnostics
+#
+# The old code turned every lookup failure into the single word "unknown", so a
+# VPS whose Incus socket the panel cannot reach (missing incus-admin group, LXD
+# instead of Incus, a stopped daemon) looked broken forever and said nothing
+# about why. Status is now resolved through the REST socket first and a single
+# cached ``incus list`` second, and the reason is exposed by
+# /admin/diagnostics/incus.
+# ---------------------------------------------------------------------------
+
+_OMEGA_STATUS_ALIASES = {
+    "running": "running",
+    "stopped": "stopped",
+    "shutdown": "stopped",
+    "frozen": "stopped",
+    "frozen_running": "stopped",
+    "ready": "stopped",
+    "created": "created",
+    "error": "stopped",
+}
+
+
+def _omega_map_state(value):
+    return _OMEGA_STATUS_ALIASES.get(str(value or "").strip().lower().replace(" ", "_"), "")
+
+
+_omega_cli_cache = {"at": 0.0, "ok": False, "states": {}}
+_omega_cli_lock = threading.Lock()
+
+
+def _omega_incus_state_map(force=False):
+    """One ``incus list`` for the whole host, cached: (available, {name: state}).
+
+    Listing once keeps a page with dozens of VPSs fast even when the REST
+    socket is unreachable, which is exactly the host this fallback exists for.
+    """
+    now = time.time()
+    with _omega_cli_lock:
+        if not force and (now - _omega_cli_cache["at"]) < 15:
+            return _omega_cli_cache["ok"], dict(_omega_cli_cache["states"])
+    ok, states = False, {}
+    cli = shutil.which("incus") or shutil.which("lxc")
+    if cli:
+        try:
+            proc = subprocess.run([cli, "list", "--format", "csv", "-c", "ns"],
+                                  capture_output=True, text=True, timeout=25, check=False)
+            if proc.returncode == 0:
+                ok = True
+                for line in (proc.stdout or "").splitlines():
+                    parts = [part.strip() for part in line.split(",")]
+                    if len(parts) >= 2 and parts[0]:
+                        states[parts[0]] = _omega_map_state(parts[1])
+        except Exception:
+            app.logger.debug("incus list fallback failed", exc_info=True)
+    with _omega_cli_lock:
+        _omega_cli_cache.update({"at": now, "ok": ok, "states": states})
+    return ok, dict(states)
+
+
+def omega_incus_cli_status(name):
+    """State from the cached host listing (empty string when it is not there)."""
+    ok, states = _omega_incus_state_map()
+    return states.get(str(name or "").strip(), "") if ok else ""
+
+
+def _omega_incus_status(name):
+    """Resolve an Incus/LXD instance state: REST socket first, CLI listing second."""
+    state = _omega_map_state(_omega_lxc_status_base(name))
+    if state in {"running", "stopped"}:
+        return state
+    available, states = _omega_incus_state_map()
+    if available:
+        local = states.get(name)
+        if local:
+            return local
+        if name not in states:
+            # The daemon answered and this instance is not in it: it is gone,
+            # not "unknown".
+            return "not_found"
+    app.logger.warning(
+        "VPS %s status could not be resolved (REST=%s, CLI listing=%s)",
+        name, state or "n/a", "unavailable" if not available else "present but unmapped",
+    )
+    return "unknown"
+
+
+@app.route("/admin/diagnostics/incus")
+@admin_required
+def omega_incus_diagnostics():
+    """Why a VPS shows "unknown": socket, CLI, daemon and per-VPS state."""
+    import getpass
+
+    sockets = {}
+    for path in ("/var/lib/incus/unix.socket", "/var/snap/lxd/common/lxd/unix.socket"):
+        try:
+            sockets[path] = os.path.exists(path)
+        except Exception:
+            sockets[path] = False
+    code, resp = _lxd_request("GET", "/1.0")
+    cli_available, cli_states = _omega_incus_state_map(force=True)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, container_name, COALESCE(vps_type,'lxc') AS vps_type, node_id, status "
+            "FROM vps ORDER BY id DESC LIMIT 40"
+        ).fetchall()
+        nodes = conn.execute("SELECT id, name, is_local, status FROM nodes").fetchall()
+    finally:
+        conn.close()
+    vps_report = []
+    for row in rows:
+        name = row["container_name"]
+        kind = str(row["vps_type"] or "lxc")
+        is_incus = kind != "nonkvm"
+        vps_report.append({
+            "id": row["id"],
+            "name": name,
+            "vps_type": kind,
+            "db_status": row["status"],
+            "resolved": lxc_status(name),
+            "rest_state": _omega_lxc_status_base(name) if is_incus else None,
+            "cli_state": cli_states.get(name, "") if is_incus else None,
+            "nonkvm_state_dir": omega_nonkvm_on_disk(name),
+        })
+    try:
+        account = getpass.getuser()
+    except Exception:
+        account = "?"
+    return jsonify({
+        "panel_user": account,
+        "panel_groups": os.getgroups(),
+        "sockets": sockets,
+        "server": {"status": code, "body": str(resp)[:400]},
+        "cli_available": cli_available,
+        "instances": sorted(cli_states.items())[:100],
+        "nodes": [dict(node) for node in nodes],
+        "vps": vps_report,
+    })
+

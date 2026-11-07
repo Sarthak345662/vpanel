@@ -131,6 +131,20 @@ if command -v incus >/dev/null 2>&1; then
   usermod -aG incus "$SERVICE_USER" 2>/dev/null || true
 fi
 
+# A systemd unit keeps the supplementary groups it started with, so a panel that
+# was already running before the usermod above can still be locked out of the
+# Incus socket - which is what made status and reinstall report "unknown".
+# Restart the services here so they pick up incus-admin/incus/kvm.
+restart_if_installed() {
+  local unit="$1"
+  [[ -f "/etc/systemd/system/${unit}" ]] || return 0
+  systemctl restart "$unit" 2>/dev/null || true
+}
+restart_if_installed omega-panel.service
+restart_if_installed omega-node.service
+restart_if_installed omega-jobs.service
+restart_if_installed omega-bot.service
+
 # Python virtualenv. Use the distro Python rather than downloading old interpreters.
 PYTHON_BIN="$(command -v python3)"
 "$PYTHON_BIN" -m venv "$INSTALL_DIR/venv"
@@ -253,6 +267,18 @@ if [[ -f /etc/systemd/system/omega-bot.service ]]; then
 fi
 systemctl enable --now omega-watchdog.timer
 systemctl enable --now omega-image-refresh.timer
+
+# Prove the panel account can actually talk to Incus; without this it silently
+# reports every VPS as "unknown" and nothing can be started or reinstalled.
+if command -v incus >/dev/null 2>&1; then
+  if runuser -u "$SERVICE_USER" -- incus list >/dev/null 2>&1; then
+    echo "[Vizion V4] Incus socket reachable for ${SERVICE_USER}."
+  else
+    echo "[Vizion V4] WARNING: ${SERVICE_USER} cannot run 'incus list'." >&2
+    echo "[Vizion V4]   VPS status will show 'unknown'. Fix with:" >&2
+    echo "[Vizion V4]   usermod -aG incus-admin ${SERVICE_USER} && systemctl restart incus omega-panel" >&2
+  fi
+fi
 
 if [[ "$NODE_ONLY" -eq 0 ]]; then
   echo
