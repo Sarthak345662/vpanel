@@ -16586,11 +16586,19 @@ pkill -f sshx >/dev/null 2>&1 || true
 sleep 1
 rm -f /tmp/sshx_output.log
 if ! command -v curl >/dev/null 2>&1; then
-  (apt-get update -y >/dev/null 2>&1; apt-get install -y curl ca-certificates >/dev/null 2>&1) || true
+  timeout 90 sh -c 'apt-get update -y >/dev/null 2>&1; apt-get install -y curl ca-certificates >/dev/null 2>&1' || true
 fi
 if ! command -v sshx >/dev/null 2>&1; then
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL https://sshx.io/get | sh >/tmp/sshx_install.log 2>&1 || true
+    # Without a working DNS/internet an unbounded curl hangs until the panel
+    # kills the whole step, which looked like "no output from the guest".
+    if ! curl -fsS --connect-timeout 8 --max-time 25 -o /dev/null https://sshx.io/get 2>/tmp/sshx_net.log; then
+      echo "OMEGA_SSHX_NO_NET"
+      tail -n 4 /tmp/sshx_net.log 2>/dev/null
+      getent hosts sshx.io 2>/dev/null || { cat /etc/resolv.conf 2>/dev/null | head -n 3; }
+      exit 0
+    fi
+    curl -fsSL --connect-timeout 8 --max-time 150 https://sshx.io/get | sh >/tmp/sshx_install.log 2>&1 || true
   else
     echo "OMEGA_SSHX_NO_CURL"
   fi
@@ -16626,7 +16634,26 @@ exit 0
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="ignore")
         if "sshx.io" not in str(output):
-            detail = " ".join(str(output or "").split())[-320:] or "no output from the guest"
+            detail = " ".join(str(output or "").split())[-320:]
+            if not detail or exit_code in (124, 137, 143):
+                # The step was killed before it could explain itself, so ask the
+                # guest the two questions that matter: did the installer leave a
+                # log, and can it resolve/reach sshx.io at all?
+                try:
+                    _, diag = lxc_attach(
+                        container_id,
+                        "tail -n 6 /tmp/sshx_install.log 2>/dev/null; "
+                        "getent hosts sshx.io >/dev/null 2>&1 && echo NET=ok || echo NET=no-dns; "
+                        "curl -sS -m 8 -o /dev/null -w 'HTTP %{http_code}\\n' https://sshx.io/get 2>&1 | tail -n 1",
+                        timeout=25,
+                    )
+                    diag = " ".join(str(diag or "").split())[-260:]
+                    if diag:
+                        detail = (detail + " \u2014 " if detail else "") + "guest check: " + diag
+                except Exception:
+                    app.logger.debug("SSHX guest diagnosis failed", exc_info=True)
+            if not detail:
+                detail = "no output from the guest"
             if exit_code in (124, 137, 143) and "no output" in detail:
                 detail += (
                     " — the SSHX step was killed after %ss before it printed a link. "
