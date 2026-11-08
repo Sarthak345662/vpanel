@@ -157,40 +157,69 @@ EOF
   cloud-localds "${STATE_DIR}/seed.iso" "${STATE_DIR}/user-data" "${STATE_DIR}/meta-data"
 }
 
-qemu_boot() {
-  local disk="${STATE_DIR}/disk.qcow2" seed="${STATE_DIR}/seed.iso"
-  local port nesting cpu_model
+vm_launch() {
+  local accel="$1" cpu="$2" port
   port="$(state_value PORT "")"
-  nesting="$(state_value NESTING off)"
-  [[ -n "$port" ]] || die "No SSH port recorded for ${NAME}"
-  if [[ "$nesting" == "on" ]]; then cpu_model="max,+vmx,+svm"; else cpu_model="max"; fi
-
   local args=(
     -name "$NAME"
-    -machine q35,accel=tcg
-    -cpu "$cpu_model"
+    -machine "q35,accel=${accel}"
+    -cpu "$cpu"
     -smp "$(state_value CPU 2)"
     -m "$(state_value RAM_MB 2048)M"
-    -drive "file=${disk},if=virtio,format=qcow2,cache=writeback"
-    -drive "file=${seed},if=virtio,format=raw,readonly=on"
+    -drive "file=${STATE_DIR}/disk.qcow2,if=virtio,format=qcow2,cache=writeback"
+    -drive "file=${STATE_DIR}/seed.iso,if=virtio,format=raw,readonly=on"
     -device virtio-net-pci,netdev=net0
     -netdev "user,id=net0,hostfwd=tcp:${SSH_BIND}:${port}-:22"
     -display none
+    -rtc base=utc
     -serial "file:${STATE_DIR}/console.log"
     -pidfile "${STATE_DIR}/qemu.pid"
     -daemonize
   )
-  if ! qemu-system-x86_64 "${args[@]}" 2>"${STATE_DIR}/qemu.err"; then
-    if [[ "$nesting" == "on" ]]; then
-      note "Nested CPU features are unsupported by this QEMU; booting with plain TCG CPU instead."
-      sed -i 's/^NESTING=.*/NESTING=off/' "$ENV_FILE" 2>/dev/null || true
-      args[5]="max"
-      qemu-system-x86_64 "${args[@]}" 2>"${STATE_DIR}/qemu.err" || { cat "${STATE_DIR}/qemu.err" >&2; die "QEMU failed to start"; }
-    else
-      cat "${STATE_DIR}/qemu.err" >&2
-      die "QEMU failed to start"
+  qemu-system-x86_64 "${args[@]}" 2>"${STATE_DIR}/qemu.err"
+}
+
+qemu_boot() {
+  local nesting accel cpu_model
+  nesting="$(state_value NESTING off)"
+  [[ -n "$(state_value PORT "")" ]] || die "No SSH port recorded for ${NAME}"
+
+  # Plain TCG boots the guest tens of times slower and the guest never answers
+  # SSH inside the panel window, which looked like "port 22000 timed out".
+  # When the host exposes /dev/kvm, use it; keep TCG as the fallback.
+  accel="tcg"
+  cpu_model="max"
+  # OMEGA_NONKVM_ACCEL=kvm forces KVM even when this shell cannot stat the
+  # device (the service user is in the kvm group), OMEGA_NONKVM_ACCEL=tcg
+  # forces the slow emulated path.
+  if [[ "${OMEGA_NONKVM_ACCEL:-auto}" == "kvm" ]] \
+     || { [[ "${OMEGA_NONKVM_ACCEL:-auto}" != "tcg" ]] && [[ -r /dev/kvm && -w /dev/kvm ]]; }; then
+    accel="kvm"
+    cpu_model="host"
+  fi
+  if [[ "$nesting" == "on" ]]; then
+    if [[ "$accel" == "kvm" ]]; then cpu_model="host,+vmx,+svm"; else cpu_model="max,+vmx,+svm"; fi
+  fi
+
+  if vm_launch "$accel" "$cpu_model"; then
+    note "Started ${NAME} with ${accel} acceleration (cpu ${cpu_model})."
+    echo "ACCEL=${accel}" >>"$ENV_FILE" 2>/dev/null || true
+    return 0
+  fi
+  if [[ "$accel" == "kvm" ]]; then
+    note "KVM acceleration failed for ${NAME}; falling back to TCG (boot will be slower)."
+    if vm_launch tcg max; then
+      echo "ACCEL=tcg" >>"$ENV_FILE" 2>/dev/null || true
+      return 0
     fi
   fi
+  if [[ "$nesting" == "on" ]]; then
+    note "Nested CPU features are unsupported by this QEMU; booting with plain TCG CPU instead."
+    sed -i 's/^NESTING=.*/NESTING=off/' "$ENV_FILE" 2>/dev/null || true
+    if vm_launch tcg max; then return 0; fi
+  fi
+  cat "${STATE_DIR}/qemu.err" >&2
+  die "QEMU failed to start"
 }
 
 do_create() {

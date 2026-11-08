@@ -16618,11 +16618,22 @@ tail -n 20 /tmp/sshx_output.log 2>/dev/null
 exit 0
 """
         command = script
-        exit_code, output = lxc_attach(container_id, command, timeout=75, wait_ssh=180)
+        exit_code, output = lxc_attach(
+            container_id, command,
+            timeout=int(os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
+            wait_ssh=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "300")),
+        )
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="ignore")
         if "sshx.io" not in str(output):
             detail = " ".join(str(output or "").split())[-320:] or "no output from the guest"
+            if exit_code in (124, 137, 143) and "no output" in detail:
+                detail += (
+                    " — the SSHX step was killed after %ss before it printed a link. "
+                    "The guest is either still booting or it cannot reach sshx.io "
+                    "(no DNS/internet inside the VPS)."
+                    % os.environ.get("OMEGA_SSHX_TIMEOUT", "180")
+                )
             raise RuntimeError(f"Could not start SSHX in VPS (exit {exit_code}): {detail}")
         match = _re.search(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+", str(output))
         if not match:
@@ -18645,7 +18656,7 @@ def _omega_nonkvm_pid_alive(name):
         return False
 
 
-def _omega_wait_guest_ssh(name, port, password, timeout=180):
+def _omega_wait_guest_ssh(name, port, password, timeout=300):
     """Wait for a Non-KVM guest to answer SSH.
 
     Without KVM the guest boots under TCG, which regularly needs one to three
