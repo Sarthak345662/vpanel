@@ -82,18 +82,21 @@ systemctl enable --now incus 2>/dev/null || systemctl enable --now incus.service
 if command -v incus >/dev/null 2>&1; then
   # Root normally reaches the socket right away; give it a moment instead of
   # asking the daemon something it is not ready for yet.
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    timeout 10 incus info >/dev/null 2>&1 && break
-    sleep 2
+  echo "[Vizion V4] Waiting for the Incus daemon (max 30s)…"
+  for _ in 1 2 3 4 5 6; do
+    timeout 5 incus info >/dev/null 2>&1 && break
+    sleep 1
   done
-  if ! timeout 10 incus info >/dev/null 2>&1; then
+  if ! timeout 5 incus info >/dev/null 2>&1; then
     # `incus admin init` is the step that silently hangs an unattended update:
     # it can wait on stdin or on a daemon that never comes up. Close stdin and
-    # cap the runtime so the update always continues.
-    timeout 420 incus admin init --auto </dev/null >/dev/null 2>&1 \
-      || timeout 420 incus admin init --minimal </dev/null >/dev/null 2>&1 \
+    # cap the runtime so the update always continues within about two minutes.
+    echo "[Vizion V4] Initializing Incus storage and network (max 60s)…"
+    timeout 60 incus admin init --auto </dev/null >/dev/null 2>&1 \
+      || timeout 60 incus admin init --minimal </dev/null >/dev/null 2>&1 \
       || echo "[Vizion V4] WARNING: Incus is not initialized; run 'sudo incus admin init --auto' manually." >&2
   fi
+  echo "[Vizion V4] Incus step finished; continuing."
   timeout 15 incus config set images.auto_update_cached true </dev/null >/dev/null 2>&1 || true
   timeout 15 incus config set images.auto_update_interval 6 </dev/null >/dev/null 2>&1 || true
 fi

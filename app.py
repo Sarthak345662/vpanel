@@ -18255,6 +18255,29 @@ def omega_vps_create_job(job_id):
         conn.close()
     if not row:
         return jsonify({'error': 'Job not found'}), 404
+    if str(row['status'] or '') in ('queued', 'running'):
+        # A restart of the panel kills the worker thread that owns the job, and
+        # the dialog would then wait on a row that nobody updates any more.
+        try:
+            stamp = datetime.strptime(str(row['updated_at']), '%Y-%m-%d %H:%M:%S')
+            idle = (datetime.now() - stamp).total_seconds()
+        except Exception:
+            idle = 0
+        if idle > 600 and int(row['progress'] or 0) < 100:
+            _omega_job_update(
+                job_id, status='error', progress=100,
+                message='Creation stopped reporting after %d minutes. Check All VPS before retrying.' % int(idle // 60),
+                error='No progress from the create worker for %d minutes. The background job was '
+                      'interrupted (a panel restart or worker timeout). The VPS may still exist: '
+                      'open All VPS and delete it before creating it again.' % int(idle // 60),
+            )
+            conn = get_db()
+            try:
+                row = conn.execute("SELECT * FROM vps_create_jobs WHERE id=?", (job_id,)).fetchone()
+            finally:
+                conn.close()
+            if not row:
+                return jsonify({'error': 'Job not found'}), 404
     if int(row['admin_id'] or 0) != int(session['user_id']) and not session.get('is_admin'):
         return jsonify({'error': 'Not allowed'}), 403
     vps_id = row['vps_id']
@@ -18330,6 +18353,8 @@ _OMEGA_CREATE_UI = r"""
   var actions = box.querySelector('.ocp-actions');
   var timer = null;
   var started = 0;
+  var lastProgress = -1;
+  var stalled = 0;
   function reset(){
     title.textContent = 'Creating your VPS\u2026';
     step.textContent = 'Starting\u2026';
@@ -18338,6 +18363,12 @@ _OMEGA_CREATE_UI = r"""
     errBox.style.display = 'none';
     errBox.textContent = '';
     actions.style.display = 'none';
+    var retryReset = box.querySelector('[data-act="retry"]');
+    if (retryReset) retryReset.style.display = '';
+    var closeReset = box.querySelector('[data-act="close"]');
+    if (closeReset) closeReset.textContent = 'Close';
+    lastProgress = -1;
+    stalled = 0;
     box.classList.remove('done');
   }
   function open(){ reset(); box.classList.add('show'); started = Date.now(); }
@@ -18364,8 +18395,20 @@ _OMEGA_CREATE_UI = r"""
       actions.style.display = 'flex';
       return;
     }
-    if (Date.now() - started > 1200000) {
-      step.textContent = (job.message || 'Still working') + ' (taking longer than usual)';
+    var elapsed = Math.round((Date.now() - started) / 1000);
+    if (job.progress === lastProgress) { stalled += 1300; } else { stalled = 0; lastProgress = job.progress; }
+    var suffix = ' \u00b7 ' + Math.floor(elapsed / 60) + 'm ' + (elapsed % 60) + 's';
+    if (stalled > 90000) {
+      step.textContent = (job.message || 'Still working') + suffix +
+        ' \u2014 no new step for ' + Math.round(stalled / 1000) +
+        's. The VPS keeps building in the background, so you can close this and check All VPS.';
+      actions.style.display = 'flex';
+      var retryBtn = box.querySelector('[data-act="retry"]');
+      if (retryBtn) retryBtn.style.display = 'none';
+      var closeBtn = box.querySelector('[data-act="close"]');
+      if (closeBtn) closeBtn.textContent = 'Close and check All VPS';
+    } else if (elapsed > 90) {
+      step.textContent = (job.message || 'Still working') + suffix;
     }
     timer = setTimeout(function(){ poll(job.id); }, 1300);
   }
