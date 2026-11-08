@@ -16,6 +16,9 @@ import app as panel  # noqa: E402
 
 failures = []
 
+# Keep the real executor: a later section stubs panel.lxc_attach globally.
+REAL_LXC_ATTACH = panel.lxc_attach
+
 
 def check(name, condition, detail=""):
     if condition:
@@ -171,6 +174,90 @@ for command_name in ("ping", "plans", "freeplans", "thresholds", "help", "user-s
     check(f"handler {command_name}", isinstance(text, str) and len(text) > 10, str(text)[:120])
 help_text = asyncio.run(registered["run"]("help", actor, {}))
 check("help lists admin commands", "/purge-vm-all" in help_text and "/ports add" in help_text)
+
+print("SECTION 7", flush=True)
+# 7. The SSHX step must not kill the shell that runs it, and a KVM guest whose
+#    Incus agent is still starting must be retried instead of reported broken.
+import subprocess as _sp  # noqa: E402
+import time as _time  # noqa: E402
+
+captured = {}
+
+
+def _fake_attach(name, command, timeout=60, **kwargs):
+    captured["command"] = command
+    return 0, b"https://sshx.io/s/checkshare"
+
+
+conn = panel.get_db()
+conn.execute(
+    "INSERT INTO vps (user_id, node_id, container_id, container_name, ssh_command, "
+    "os_type, ram, cpu, disk, status) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    (admin_id, nodes[0]["id"], "omega-check-lxc", "omega-check-lxc", "",
+     "ubuntu-22.04", "2GB", "1 vCPU", "20GB", "running"),
+)
+conn.commit()
+sshx_vps_id = conn.execute("SELECT id FROM vps WHERE container_id='omega-check-lxc'").fetchone()["id"]
+conn.close()
+
+real_attach = REAL_LXC_ATTACH
+real_status = panel.lxc_status
+real_start = panel.lxc_start
+panel.lxc_attach = _fake_attach
+panel.lxc_status = lambda name: "running"
+panel.lxc_start = lambda name: True
+try:
+    url = panel._omega_bot_ensure_sshx(sshx_vps_id, force=True)
+finally:
+    panel.lxc_attach = real_attach
+    panel.lxc_status = real_status
+    panel.lxc_start = real_start
+
+script = captured.get("command", "")
+check("sshx link returned", url == "https://sshx.io/s/checkshare", url)
+check("sshx step does not pkill -f itself", "pkill -f" not in script, script[:160])
+check("sshx step tracks a pid file", "/tmp/sshx.pid" in script, script[:160])
+if _sp is not None and script:
+    parsed = _sp.run(["/bin/sh", "-n"], input=script, text=True, capture_output=True)
+    check("sshx step is valid shell", parsed.returncode == 0, parsed.stderr[:200])
+
+check("agent error detected",
+      panel._omega_agent_not_ready(b"Error: VM agent isn't currently running"), "")
+check("real output not mistaken for agent error",
+      not panel._omega_agent_not_ready(b"OMEGA_PASSWORD_OK"), "")
+
+agent_calls = []
+
+
+def _fake_cli(name, command, timeout):
+    agent_calls.append(command)
+    if len(agent_calls) == 1:
+        return 1, b"Error: VM agent isn't currently running"
+    return 0, b"agent-ready"
+
+
+real_kind = panel.omega_vps_kind
+real_base = panel._omega_lxc_attach_base
+real_cli = panel._omega_instance_exec_cli
+real_sleep = _time.sleep
+panel.omega_vps_kind = lambda name, default="lxc": "kvm"
+panel._omega_lxc_attach_base = lambda *a, **k: (1, b"")
+panel._omega_instance_exec_cli = _fake_cli
+_time.sleep = lambda seconds: None
+try:
+    code, output = panel.lxc_attach("omega-check-kvm", "true", timeout=45)
+finally:
+    panel.omega_vps_kind = real_kind
+    panel._omega_lxc_attach_base = real_base
+    panel._omega_instance_exec_cli = real_cli
+    _time.sleep = real_sleep
+check("kvm agent wait retries the command", code == 0 and output == b"agent-ready",
+      f"code={code} out={output!r} calls={len(agent_calls)}")
+
+conn = panel.get_db()
+conn.execute("DELETE FROM vps WHERE container_id='omega-check-lxc'")
+conn.commit()
+conn.close()
 
 print()
 if failures:

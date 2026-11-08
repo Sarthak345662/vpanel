@@ -16582,7 +16582,16 @@ def _omega_bot_ensure_sshx(vps_id, force=False):
         # tail of its own log, so the panel can show the real reason.
         script = r"""
 export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-pkill -f sshx >/dev/null 2>&1 || true
+# Do not match on the whole command line here: this script IS the command line
+# of the shell running it, so a full-line match killed the shell itself. That was
+# the silent "exit 143: no output from the guest" with no marker printed.
+if [ -f /tmp/sshx.pid ]; then
+  kill "$(cat /tmp/sshx.pid)" 2>/dev/null || true
+  rm -f /tmp/sshx.pid
+fi
+for _omega_pid in $(pgrep -x sshx 2>/dev/null); do
+  kill "$_omega_pid" 2>/dev/null || true
+done
 sleep 1
 rm -f /tmp/sshx_output.log
 if ! command -v curl >/dev/null 2>&1; then
@@ -16614,6 +16623,7 @@ if command -v setsid >/dev/null 2>&1; then
 else
   nohup sshx >/tmp/sshx_output.log 2>&1 </dev/null &
 fi
+echo $! > /tmp/sshx.pid 2>/dev/null || true
 i=0
 while [ "$i" -lt 40 ]; do
   grep -Eo "https://sshx\.io/s/[A-Za-z0-9#?=_-]+" /tmp/sshx_output.log 2>/dev/null && exit 0
@@ -18037,9 +18047,70 @@ def _omega_nonkvm_terminal(name):
 _omega_lxc_attach_base = lxc_attach
 
 
+def _omega_instance_exec_cli(name, command, timeout):
+    """Run a command through the Incus CLI, which returns real stdout/stderr.
+
+    The REST exec call reports "record-output" but several Incus builds answer
+    with log paths the panel cannot read, and a failed operation returns
+    (1, b"") with nothing to explain it.
+    """
+    cli = shutil.which("incus") or shutil.which("lxc")
+    if not cli:
+        return None
+    try:
+        proc = subprocess.run([cli, "exec", str(name), "--", "/bin/sh", "-c", command],
+                              capture_output=True, timeout=timeout, check=False)
+        return proc.returncode, (proc.stdout or b"") + (proc.stderr or b"")
+    except subprocess.TimeoutExpired:
+        return 124, ("Command timed out after %ss" % timeout).encode()
+    except Exception:
+        app.logger.debug("CLI exec fallback failed for %s", name, exc_info=True)
+        return None
+
+
+def _omega_agent_not_ready(output):
+    """True when Incus refused an exec because the VM agent is not up yet."""
+    text = " ".join(str(output or "").split()).lower()
+    if not text:
+        return False
+    return ("agent isn't currently running" in text
+            or "agent is not running" in text
+            or ("vm agent" in text and "running" in text))
+
+
+def _omega_wait_instance_agent(name, timeout=150):
+    """A freshly launched Incus VM accepts exec calls only once its agent runs.
+
+    Without this, the first chpasswd/SSHX step right after creation failed with
+    "Error: VM agent isn't currently running" and the VPS looked unreachable.
+    """
+    deadline = time.time() + max(10, int(timeout))
+    while time.time() < deadline:
+        result = _omega_instance_exec_cli(name, "true", 15)
+        if result and result[0] == 0:
+            return True
+        time.sleep(3)
+    return False
+
+
+def _omega_nonkvm_console_tail(name, limit=400):
+    path = "/var/lib/omega-panel/nonkvm/%s/console.log" % name
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 4000))
+            data = handle.read()
+    except OSError:
+        return ""
+    text = " ".join(data.decode("utf-8", errors="ignore").split())
+    return text[-int(limit):]
+
+
 def lxc_attach(name, command, timeout=60, **kwargs):
     wait_ssh = kwargs.pop("wait_ssh", 0) or 0
-    if omega_vps_kind(name) == "nonkvm":
+    kind = omega_vps_kind(name)
+    if kind == "nonkvm":
         password, port = _omega_nonkvm_credentials(name)
         if not port:
             raise RuntimeError(
@@ -18048,8 +18119,20 @@ def lxc_attach(name, command, timeout=60, **kwargs):
         if wait_ssh:
             _omega_wait_guest_ssh(name, port, password, timeout=wait_ssh)
         code, output = _omega_ssh_exec(port, password, command, timeout=timeout)
+        # A software-emulated guest can still be busy with boot while its sshd
+        # already answered a probe, so one banner timeout is not proof that the
+        # VPS is dead. Retry before reporting a failure.
+        attempts = 0
+        while code == 255 and attempts < 3:
+            attempts += 1
+            time.sleep(5)
+            code, output = _omega_ssh_exec(port, password, command,
+                                           timeout=min(int(timeout), 90))
         if code == 255:
             detail = " ".join(str(output or "").split())[-300:] or "no response from the guest"
+            tail = _omega_nonkvm_console_tail(name, 300)
+            if tail:
+                detail += " | console: " + tail
             raise RuntimeError(
                 "The Non-KVM guest is not answering SSH on 127.0.0.1:%s yet (%s). "
                 "Boot log: /var/lib/omega-panel/nonkvm/%s/console.log" % (port, detail, name)
@@ -18057,18 +18140,20 @@ def lxc_attach(name, command, timeout=60, **kwargs):
         return code, output
     code, output = _omega_lxc_attach_base(name, command, timeout=timeout, **kwargs)
     if not output:
-        # The REST exec call reports "record-output" but several Incus builds
-        # answer with log paths the panel cannot read, and a failed operation
-        # returns (1, b"") with nothing to explain it. The CLI hands back real
-        # stdout/stderr, which is what the SSHX and reinstall steps need.
-        cli = shutil.which("incus") or shutil.which("lxc")
-        if cli:
-            try:
-                proc = subprocess.run([cli, "exec", str(name), "--", "/bin/sh", "-c", command],
-                                      capture_output=True, timeout=timeout, check=False)
-                return proc.returncode, (proc.stdout or b"") + (proc.stderr or b"")
-            except Exception:
-                app.logger.debug("CLI exec fallback failed for %s", name, exc_info=True)
+        result = _omega_instance_exec_cli(name, command, timeout)
+        if result is not None:
+            code, output = result
+    if kind == "kvm" and code != 0 and _omega_agent_not_ready(output):
+        if _omega_wait_instance_agent(name, timeout=min(120, max(45, int(timeout)))):
+            result = _omega_instance_exec_cli(name, command, timeout)
+            if result is not None:
+                code, output = result
+        else:
+            note = ("The KVM guest's Incus agent did not answer within %ss, so the "
+                    "VM is probably still booting: retry in a minute. If it keeps "
+                    "failing, this image has no Incus agent installed."
+                    % min(120, max(45, int(timeout))))
+            output = ("%s %s" % (str(output or "").strip(), note)).strip().encode()
     return code, output
 
 
