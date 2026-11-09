@@ -90,39 +90,70 @@ def _omega_guest_eth0_ip(name):
 
 
 def _omega_lxc_net_info(name):
-    """Bridge subnet and gateway used by the guest, best effort."""
+    """Bridge subnet and gateway used by the guest, best effort.
+
+    The guest's NIC usually comes from the *profile*, so the instance-local
+    config does not name the bridge; ask for the expanded config, then fall
+    back to every managed bridge Incus knows about, and finally to the
+    address the host itself has on an unmanaged parent bridge.
+    """
     import subprocess as _sp
-    bridge = ""
-    try:
-        cfg = _sp.run(['incus', 'config', 'show', name],
-                      capture_output=True, timeout=15).stdout.decode("utf-8", "ignore")
-        found = re.search(r"^\s*network:\s*(\S+)\s*$", cfg, re.M)
-        if found:
-            bridge = found.group(1)
-    except Exception:
-        pass
-    for candidate in ([bridge] if bridge else []) + ["incusbr0", "lxdbr0"]:
+
+    def run(args, timeout=10):
         try:
-            addr = _sp.run(['incus', 'network', 'get', candidate, 'ipv4.address'],
-                           capture_output=True,
-                           timeout=10).stdout.decode("utf-8", "ignore").strip()
+            return _sp.run(args, capture_output=True,
+                           timeout=timeout).stdout.decode("utf-8", "ignore").strip()
         except Exception:
-            continue
+            return ""
+
+    candidates = []
+    cfg = run(['incus', 'config', 'show', '--expanded', name], 15)
+    for found in re.finditer(r"^\s*(?:network|parent):\s*(\S+)\s*$", cfg, re.M):
+        if found.group(1) not in candidates:
+            candidates.append(found.group(1))
+    listing = run(['incus', 'network', 'list', '--format', 'csv'], 10)
+    for line in listing.splitlines():
+        cols = line.split(",")
+        if len(cols) >= 3 and cols[1].strip() == "bridge" \
+                and cols[2].strip().upper() == "YES" and cols[0] not in candidates:
+            candidates.append(cols[0].strip())
+    for extra in ("incusbr0", "lxdbr0"):
+        if extra not in candidates:
+            candidates.append(extra)
+    for candidate in candidates:
+        addr = run(['incus', 'network', 'get', candidate, 'ipv4.address'])
+        gateway = run(['incus', 'network', 'get', candidate, 'ipv4.gateway'])
         if not addr or "/" not in addr or addr.lower().startswith("none"):
-            continue
-        gateway = ""
-        try:
-            gateway = _sp.run(['incus', 'network', 'get', candidate, 'ipv4.gateway'],
-                              capture_output=True,
-                              timeout=10).stdout.decode("utf-8", "ignore").strip()
-        except Exception:
-            pass
+            # Unmanaged bridge (or "auto"): read the host's own address on it.
+            host = run(['ip', '-4', '-o', 'addr', 'show', 'dev', candidate])
+            found = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", host)
+            if not found:
+                continue
+            addr = "%s/%s" % (found.group(1), found.group(2))
         net, _, prefix = addr.partition("/")
         if not gateway or gateway in ("auto", "none"):
             gateway = net
         return {"bridge": candidate, "net": net,
                 "prefix": prefix or "24", "gateway": gateway}
     return {}
+
+
+def _omega_incus_bridge_enable_dhcp(info):
+    """Turn DHCP and NAT back on for a managed bridge that has them disabled."""
+    import subprocess as _sp
+    bridge = (info or {}).get("bridge")
+    if not bridge:
+        return
+    for key in ("ipv4.dhcp", "ipv4.nat"):
+        try:
+            cur = _sp.run(['incus', 'network', 'get', bridge, key],
+                          capture_output=True, timeout=10).stdout.decode().strip().lower()
+            if cur == "false":
+                _sp.run(['incus', 'network', 'set', bridge, key, 'true'],
+                        capture_output=True, timeout=20)
+                app.logger.info("Enabled %s on Incus network %s", key, bridge)
+        except Exception:
+            pass
 
 
 def _lxc_fix_networking(name, budget=120):
@@ -148,6 +179,10 @@ def _lxc_fix_networking(name, budget=120):
                                capture_output=True, timeout=timeout)
             except Exception:
                 return None
+
+        # 0. A bridge with DHCP/NAT switched off can never give the guest an address.
+        if not _omega_guest_eth0_ip(name):
+            _omega_incus_bridge_enable_dhcp(_omega_lxc_net_info(name))
 
         # 1. Bring the link up and ask for a lease, whichever client exists.
         if not _omega_guest_eth0_ip(name):
@@ -16927,7 +16962,7 @@ exit 0
             container_id, command,
             timeout=int(timeout or os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
             wait_ssh=int(wait_ssh if wait_ssh is not None
-                         else os.environ.get("OMEGA_NONKVM_SSH_WAIT", "420")),
+                         else os.environ.get("OMEGA_NONKVM_SSH_WAIT", "900")),
             wait_report=_step,
         )
         if isinstance(output, bytes):
@@ -18470,9 +18505,9 @@ def lxc_attach(name, command, timeout=60, **kwargs):
         # already answered a probe, so one banner timeout is not proof that the
         # VPS is dead. Retry before reporting a failure.
         attempts = 0
-        while code == 255 and attempts < 3:
+        while code == 255 and attempts < 6:
             attempts += 1
-            time.sleep(5)
+            time.sleep(10)
             code, output = _omega_ssh_exec(port, password, command,
                                            timeout=min(int(timeout), 90))
         if code == 255:
@@ -18791,7 +18826,7 @@ def _omega_start_sshx_job(vps_row, owner_id, base_url):
                     vps_row["id"], force=True,
                     timeout=int(os.environ.get("OMEGA_SSHX_TIMEOUT",
                                                "900" if vps_type == "nonkvm" else "180")),
-                    wait_ssh=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "600"))
+                    wait_ssh=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "900"))
                     if vps_type == "nonkvm" else 0,
                     report=report,
                 )
@@ -19280,7 +19315,7 @@ def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
         if current_size != console_size:
             console_size = current_size
             console_changed = now
-        elif now - console_changed > 150 and now - started > 90:
+        elif now - console_changed > 300 and now - started > 180:
             tail = _omega_nonkvm_console_tail(name, 240)
             raise RuntimeError(
                 "The Non-KVM boot stalled: the console has not grown for "
