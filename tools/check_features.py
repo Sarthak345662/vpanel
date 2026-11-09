@@ -254,7 +254,57 @@ finally:
 check("kvm agent wait retries the command", code == 0 and output == b"agent-ready",
       f"code={code} out={output!r} calls={len(agent_calls)}")
 
+check("sshx step falls back to wget", "wget" in script, script[:160])
+
+print("SECTION 8", flush=True)
+# 8. Create must keep moving after the instance exists: the SSHX link is best
+#    effort, and refreshing it must not wipe the root password.
 conn = panel.get_db()
+conn.execute(
+    "INSERT INTO vps (user_id, node_id, container_id, container_name, ssh_command, ssh_password, "
+    "os_type, ram, cpu, disk, status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    (admin_id, nodes[0]["id"], "omega-check-sshx2", "omega-check-sshx2", "",
+     "keepme", "ubuntu-22.04", "2GB", "1 vCPU", "20GB", "running"),
+)
+conn.commit()
+keep_id = conn.execute("SELECT id FROM vps WHERE container_id='omega-check-sshx2'").fetchone()["id"]
+conn.close()
+
+real_attach = panel.lxc_attach
+real_status = panel.lxc_status
+real_start = panel.lxc_start
+panel.lxc_attach = _fake_attach
+panel.lxc_status = lambda name: "running"
+panel.lxc_start = lambda name: True
+try:
+    panel._omega_bot_ensure_sshx(keep_id, force=True, timeout=30, wait_ssh=0)
+finally:
+    panel.lxc_attach = real_attach
+    panel.lxc_status = real_status
+    panel.lxc_start = real_start
+conn = panel.get_db()
+row = conn.execute("SELECT ssh_password FROM vps WHERE id=?", (keep_id,)).fetchone()
+conn.close()
+check("sshx refresh keeps the root password",
+      bool(row) and row["ssh_password"] == "keepme",
+      str(row["ssh_password"] if row else None))
+
+real_ensure = panel._omega_bot_ensure_sshx
+
+
+def _boom(*a, **k):
+    raise RuntimeError("guest is not ready")
+
+
+panel._omega_bot_ensure_sshx = _boom
+try:
+    failed_link = panel._omega_create_sshx_for_new_vps(keep_id, "nonkvm")
+finally:
+    panel._omega_bot_ensure_sshx = real_ensure
+check("create survives a failed sshx step", failed_link == "", repr(failed_link))
+
+conn = panel.get_db()
+conn.execute("DELETE FROM vps WHERE id=?", (keep_id,))
 conn.execute("DELETE FROM vps WHERE container_id='omega-check-lxc'")
 conn.commit()
 conn.close()

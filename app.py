@@ -397,7 +397,7 @@ def _ensure_lxc_ssh_access(name):
             app.logger.exception("socat SSH fallback failed for %s", name)
     return "", 0
 
-def lxc_enable_ssh(name, timeout=240):
+def lxc_enable_ssh(name, timeout=120):
     """Best effort: make sure sshd exists and accepts root logins."""
     script = ("if ! command -v sshd >/dev/null 2>&1; then "
               "(apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server) >/dev/null 2>&1 || "
@@ -14308,7 +14308,11 @@ def _create_vps_for_user(user, data):
                 # The node prepares the QEMU guest and returns its SSH details.
                 instance_info = result
 
-        _omega_report(data, 62, "Instance created — configuring root access and SSH…",
+        # Every step from here on gets its own progress tick and a hard time
+        # budget. Before this, a slow guest (an image without sshd, no apt
+        # mirror, an Incus agent that never starts) left the create dialog
+        # sitting on 62% until the ten minute staleness check gave up.
+        _omega_report(data, 62, "Instance created — setting the root password…",
                       vps_type=vps_type)
         password = secrets.token_urlsafe(16)
         ssh_link = ""
@@ -14320,8 +14324,9 @@ def _create_vps_for_user(user, data):
             ssh_port = instance_info.get("ssh_port") or ""
             ssh_link = f"ssh root@{ssh_host}" + (f" -p {ssh_port}" if ssh_port else "")
         elif node["is_local"]:
-            password_ok, password_output = lxc_set_root_password(container_id, password)
+            password_ok, password_output = lxc_set_root_password(container_id, password, timeout=90)
             if password_ok:
+                _omega_report(data, 70, "Root password set — opening SSH access…", vps_type=vps_type)
                 try:
                     ssh_host, ssh_port = _ensure_lxc_ssh_access(container_id)
                     if ssh_host:
@@ -14372,6 +14377,15 @@ def _create_vps_for_user(user, data):
         )
         conn.commit()
         vps_id = cur.lastrowid
+        _omega_report(data, 92, "Creating the browser SSHX link…", vps_type=vps_type)
+        sshx_link = _omega_create_sshx_for_new_vps(vps_id, vps_type)
+        if sshx_link:
+            ssh_link = sshx_link
+            try:
+                conn.execute("UPDATE vps SET ssh_command=? WHERE id=?", (sshx_link, vps_id))
+                conn.commit()
+            except Exception:
+                app.logger.exception("Could not store the SSHX link for VPS %s", vps_id)
         panel_link = url_for("vps_detail", vps_id=vps_id, _external=True)
         credentials = {
             "vps_id": vps_id, "name": name, "username": "root",
@@ -16547,7 +16561,7 @@ def fix_vps_ssh(vps_id):
     return redirect(url_for("vps_detail", vps_id=vps_id))
 
 
-def _omega_bot_ensure_sshx(vps_id, force=False):
+def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None):
     """Return a working SSHX URL for a VPS, creating and caching one if needed."""
     import re as _re
     conn = get_db()
@@ -16608,6 +16622,16 @@ if ! command -v sshx >/dev/null 2>&1; then
       exit 0
     fi
     curl -fsSL --connect-timeout 8 --max-time 150 https://sshx.io/get | sh >/tmp/sshx_install.log 2>&1 || true
+  elif command -v wget >/dev/null 2>&1; then
+    # Minimal images (and guests where the curl apt install failed) still ship
+    # wget, so try it before giving up on the installer.
+    if wget -q --timeout=25 -O /tmp/sshx-get.sh https://sshx.io/get 2>/tmp/sshx_net.log; then
+      timeout 150 sh /tmp/sshx-get.sh >/tmp/sshx_install.log 2>&1 || true
+    else
+      echo "OMEGA_SSHX_NO_NET"
+      tail -n 4 /tmp/sshx_net.log 2>/dev/null
+      exit 0
+    fi
   else
     echo "OMEGA_SSHX_NO_CURL"
   fi
@@ -16638,8 +16662,9 @@ exit 0
         command = script
         exit_code, output = lxc_attach(
             container_id, command,
-            timeout=int(os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
-            wait_ssh=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "300")),
+            timeout=int(timeout or os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
+            wait_ssh=int(wait_ssh if wait_ssh is not None
+                         else os.environ.get("OMEGA_NONKVM_SSH_WAIT", "300")),
         )
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="ignore")
@@ -16703,12 +16728,38 @@ exit 0
 
     conn = get_db()
     try:
-        conn.execute("UPDATE vps SET ssh_command = ?, ssh_password = ? WHERE id = ?",
-                     (ssh_command, password, int(vps_id)))
+        # A local exec leaves password as None; COALESCE keeps the root password
+        # the create step just set instead of wiping it.
+        conn.execute("UPDATE vps SET ssh_command = ?, ssh_password = COALESCE(?, ssh_password) "
+                     "WHERE id = ?", (ssh_command, password, int(vps_id)))
         conn.commit()
     finally:
         conn.close()
     return ssh_command
+
+
+def _omega_create_sshx_for_new_vps(vps_id, vps_type):
+    """Best-effort SSHX link for a VPS that was just created.
+
+    Creation must finish even when the guest cannot run sshx yet (still booting,
+    no DNS inside the VPS, an Incus agent that never started), so this is
+    bounded and never raises. The record exists either way and the user can
+    press "Create SSHX link" on the VPS page once it is up.
+    """
+    if str(vps_type or "").strip().lower() == "nonkvm":
+        budget, wait = 120, 180
+    else:
+        budget, wait = 150, 0
+    try:
+        return _omega_bot_ensure_sshx(vps_id, force=True, timeout=budget, wait_ssh=wait) or ""
+    except Exception as exc:
+        detail = " ".join(str(exc).split())[-300:]
+        app.logger.warning("SSHX link not ready for VPS %s: %s", vps_id, detail)
+        try:
+            add_log("warning", "VPS %s: SSHX link not ready yet (%s)" % (vps_id, detail), "vps")
+        except Exception:
+            pass
+        return ""
 
 # Prefix commands ("!vps", "!ai", ...) need Discord's privileged Message Content
 # intent. When the portal has it disabled discord.py refuses to connect, so the
