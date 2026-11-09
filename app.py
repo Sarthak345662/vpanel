@@ -8519,42 +8519,36 @@ ubuntu-26.04    # Ubuntu 26.04</div>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>{{ vps['container_name'] }} &mdash; Terminal</title>
     <link rel="icon" href="/logo">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { height: 100%; background: #040208; overflow: hidden; }
-        #terminal-background { position: fixed; inset: 0; background:
-            radial-gradient(ellipse 80% 55% at 50% -10%, rgba(255,255,255,.05), transparent 60%),
-            radial-gradient(ellipse 70% 50% at 30% 110%, rgba(168,85,247,.06), transparent 60%),
-            radial-gradient(ellipse 60% 45% at 75% 120%, rgba(236,72,153,.05), transparent 60%),
-            #040208; }
-        #terminal-container { position: relative; z-index: 2; height: calc(100% - 64px); padding: 10px; }
-        #terminal-topbar { position: relative; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: rgba(12,8,20,.7); backdrop-filter: blur(8px); border-top: 1px solid #251a33; }
+        body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+        #terminal-topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: rgba(12,8,20,.9); border-bottom: 1px solid #251a33; }
         #terminal-topbar .tt-icon { width: 18px; height: 18px; display: inline-block; background: linear-gradient(135deg,#a855f7,#34d399); border-radius: 5px; }
         #terminal-topbar .tt-title { font: 600 12px/1 Inter, sans-serif; color: #e9d5ff; letter-spacing: .3px; }
-        #terminal-topbar .tt-status { margin-left: auto; font: 500 11px/1 Inter, sans-serif; color: #9ca3af; }
-        #terminal-topbar .tt-status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399; box-shadow: 0 0 6px #34d399; margin-right: 5px; vertical-align: middle; }
-        #mobile-keys { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 6px; padding: 8px; background: rgba(14,10,23,.96); border-top: 1px solid #2b2140; overflow-x: auto; z-index: 10; }
-        #mobile-keys button { flex: 1 0 auto; min-width: 54px; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a2d55; background: #1a1428; color: #f7f3ff; font: 600 13px/1 Inter, sans-serif; }
+        #terminal-topbar .tt-status { margin-left: auto; font: 500 11px/1 Inter, sans-serif; color: #9ca3af; display: flex; align-items: center; }
+        #terminal-topbar .tt-status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 6px #fbbf24; margin-right: 6px; }
+        #terminal-container { flex: 1 1 auto; min-height: 0; padding: 8px; background: #000; }
+        #terminal-container .xterm { height: 100%; }
+        #terminal-error { flex: 0 0 auto; color: #fbbf24; font: 600 13px/1.4 Inter, sans-serif; padding: 8px 12px; background: #1a1205; }
+        #mobile-keys { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px; background: rgba(14,10,23,.96); border-top: 1px solid #2b2140; overflow-x: auto; }
+        #mobile-keys button { flex: 1 0 auto; min-width: 54px; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a2d55; background: #1a1428; color: #f7f3ff; font: 600 13px/1 Inter, sans-serif; cursor: pointer; }
         #mobile-keys button:active { background: #2b2140; }
         #mobile-keys button.danger { background: #7f1d1d; border-color: #b91c1c; }
-        #terminal-error { position: relative; z-index: 3; color: #fbbf24; font: 600 13px/1.4 Inter, sans-serif; padding: 8px 10px; }
-        #xterm-hint { position: relative; z-index: 3; color: #9ca3af; font: 11px/1.4 Inter, sans-serif; text-align: center; padding: 8px; }
     </style>
 </head>
 <body>
-    <div id="terminal-background"></div>
     <div id="terminal-topbar">
         <span class="tt-icon"></span>
         <span class="tt-title">{{ vps['container_name'] }}</span>
-        <span class="tt-status"><span class="dot"></span>Connected</span>
+        <span class="tt-status"><span class="dot" id="tt-dot"></span><span id="tt-label">Connecting...</span></span>
     </div>
     <div id="terminal-container"></div>
     <div id="terminal-error" style="display:none"></div>
-    <div id="xterm-hint" style="display:none">Terminal scripts are loading. If this stays white, open the browser console (F12) and tell the admin what errors appear.</div>
     <div id="mobile-keys">
         <button type="button" data-key="tab">Tab</button>
         <button type="button" data-key="esc">Esc</button>
@@ -8565,226 +8559,255 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-    <script>        (function() {
-            var errorBox = document.getElementById('terminal-error');
-            var hintBox = document.getElementById('xterm-hint');
-            function showError(msg) {
-                errorBox.textContent = 'Terminal error: ' + msg;
-                errorBox.style.display = 'block';
-                if (hintBox) hintBox.style.display = 'block';
-                console.error('[omega-terminal]', msg);
+    <script>
+    (function() {
+        var VPS_ID = {{ vps['id'] }};
+        var API = '/api/vps/' + VPS_ID + '/terminal';
+        var errorBox = document.getElementById('terminal-error');
+        var dot = document.getElementById('tt-dot');
+        var label = document.getElementById('tt-label');
+
+        function setStatus(text, color) {
+            label.textContent = text;
+            dot.style.background = color;
+            dot.style.boxShadow = '0 0 6px ' + color;
+        }
+        function showError(msg) {
+            errorBox.textContent = 'Terminal error: ' + msg;
+            errorBox.style.display = 'block';
+            console.error('[terminal]', msg);
+        }
+        function clearError() { errorBox.style.display = 'none'; }
+
+        if (typeof Terminal === 'undefined') {
+            showError('xterm.js did not load (CDN blocked?). Check your internet / try another network or VPN.');
+            setStatus('Error', '#f87171');
+            return;
+        }
+
+        var term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            scrollback: 5000,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            theme: { background: '#000000', foreground: '#f0f0f0' }
+        });
+        var fitAddon = null;
+        if (typeof FitAddon !== 'undefined') {
+            fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+        }
+        var box = document.getElementById('terminal-container');
+        term.open(box);
+
+        function fit() { if (fitAddon) { try { fitAddon.fit(); } catch (e) {} } }
+        function focusTerm() { try { term.focus(); } catch (e) {} }
+        box.addEventListener('pointerdown', focusTerm);
+        box.addEventListener('click', focusTerm);
+        fit();
+        focusTerm();
+
+        var ESC = String.fromCharCode(27);
+        var KEYS = {
+            'tab': String.fromCharCode(9),
+            'esc': ESC,
+            'up': ESC + '[A',
+            'down': ESC + '[B',
+            'enter': String.fromCharCode(13),
+            'ctrl-c': String.fromCharCode(3)
+        };
+
+        var sessionId = null;
+        var source = null;
+        var gotData = false;
+        var failures = 0;
+        var retryTimer = null;
+        var wakeTimer = null;
+        var epoch = 0;
+
+        // ---- input: keep keystrokes in order (one request at a time) ----
+        var inputBuf = '';
+        var sending = false;
+        function sendInput(data) {
+            if (!data) return;
+            inputBuf += data;
+            flushInput();
+        }
+        function flushInput() {
+            if (sending || !sessionId || !inputBuf) return;
+            var chunk = inputBuf;
+            inputBuf = '';
+            sending = true;
+            var sid = sessionId;
+            fetch(API + '/input?session=' + encodeURIComponent(sid), {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain' },
+                body: chunk,
+                credentials: 'same-origin'
+            }).then(function(r) {
+                sending = false;
+                if (r.status === 404 || r.status === 410) {
+                    if (sid === sessionId) restartSession('Session ended, starting a new one...');
+                    return;
+                }
+                flushInput();
+            }).catch(function() {
+                sending = false;
+                inputBuf = chunk + inputBuf;
+                setTimeout(flushInput, 800);
+            });
+        }
+        term.onData(sendInput);
+
+        Array.prototype.forEach.call(document.querySelectorAll('#mobile-keys button'), function(b) {
+            b.addEventListener('click', function() {
+                sendInput(KEYS[b.getAttribute('data-key')] || '');
+                focusTerm();
+            });
+        });
+
+        // ---- resize ----
+        var resizeTimer = null;
+        function sendResize() {
+            if (!sessionId) return;
+            var dims = fitAddon ? fitAddon.proposeDimensions() : null;
+            if (!dims || !dims.cols || !dims.rows) return;
+            fetch(API + '/resize?session=' + encodeURIComponent(sessionId) + '&cols=' + dims.cols + '&rows=' + dims.rows,
+                  { method: 'POST', credentials: 'same-origin' }).catch(function() {});
+        }
+        function onResize() {
+            fit();
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(sendResize, 150);
+        }
+        window.addEventListener('resize', onResize);
+        if (window.ResizeObserver) { new ResizeObserver(onResize).observe(box); }
+
+        // ---- session / stream ----
+        function closeSource() {
+            if (source) { try { source.close(); } catch (e) {} source = null; }
+            clearTimeout(wakeTimer);
+        }
+
+        function scheduleRetry(fn, msg) {
+            failures++;
+            if (failures > 8) {
+                setStatus('Disconnected', '#f87171');
+                showError('Could not connect to the terminal. Refresh the page to try again. ' + (msg || ''));
+                return;
             }
-            try {
-                if (typeof Terminal === 'undefined') { showError('xterm.min.js did not load. Check the browser console for blocked CDN requests.'); return; }
-                if (typeof FitAddon === 'undefined') { showError('xterm addon-fit did not load. The terminal will still work but will not auto-fit the window.'); }
-            } catch(e) { showError('Terminal libraries could not be read: ' + e.message); return; }
-            try {
-                var term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'Menlo, Monaco, "Courier New", monospace', theme: { background: '#000', foreground: '#f0f0f0' } });
-                var fitAddon = (typeof FitAddon !== 'undefined') ? new FitAddon.FitAddon() : null;
-                if (fitAddon) term.loadAddon(fitAddon);
-                var terminalContainer = document.getElementById('terminal-container');
-                term.open(terminalContainer);
+            setStatus('Reconnecting...', '#fbbf24');
+            var delay = Math.min(500 * Math.pow(2, failures - 1), 8000);
+            clearTimeout(retryTimer);
+            retryTimer = setTimeout(fn, delay);
+        }
 
-                // Keep xterm's hidden textarea focused so desktop and mobile
-                // keyboards send input to the terminal.
-                function focusTerminal() {
-                    try {
-                        if (term.textarea) {
-                            term.textarea.removeAttribute('readonly');
-                            term.textarea.setAttribute('aria-label', 'Terminal input');
-                            term.textarea.setAttribute('autocomplete', 'off');
-                            term.textarea.setAttribute('autocapitalize', 'off');
-                            term.textarea.setAttribute('spellcheck', 'false');
-                        }
-                        term.focus();
-                    } catch(e) {
-                        console.warn('[omega-terminal] focus failed', e);
-                    }
-                }
+        function restartSession(msg) {
+            closeSource();
+            sessionId = null;
+            inputBuf = '';
+            if (msg) term.writeln(String.fromCharCode(13, 10) + ESC + '[33m[' + msg + ']' + ESC + '[0m');
+            clearTimeout(retryTimer);
+            retryTimer = setTimeout(createSession, 600);
+        }
 
-                terminalContainer.addEventListener('pointerdown', function() {
-                    focusTerminal();
-                });
-                terminalContainer.addEventListener('click', function() {
-                    focusTerminal();
-                });
-                terminalContainer.addEventListener('touchend', function() {
-                    focusTerminal();
-                }, { passive: true });
-
-                // xterm creates its input textarea during open(); focus after
-                // layout so the initial focus is not lost during initialization.
-                requestAnimationFrame(focusTerminal);
-                setTimeout(focusTerminal, 150);
-
-                if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
-                var sessionId = null;
-                var reconnectTimer = null;
-                function showConnected() {
-                    var dot = document.querySelector('#terminal-topbar .tt-status .dot');
-                    var label = document.querySelector('#terminal-topbar .tt-status');
-                    if (dot) { dot.style.background = '#34d399'; dot.style.boxShadow = '0 0 6px #34d399'; }
-                    if (label) label.textContent = 'Connected';
-                }
-                function showDisconnected(msg) {
-                    var dot = document.querySelector('#terminal-topbar .tt-status .dot');
-                    var label = document.querySelector('#terminal-topbar .tt-status');
-                    if (dot) { dot.style.background = '#f87171'; dot.style.boxShadow = '0 0 6px #f87171'; }
-                    if (label) label.textContent = msg ? 'Disconnected' : 'Connecting...';
-                }
-                function sendResize() {
-                    if (!sessionId) return;
-                    var dims = fitAddon ? fitAddon.proposeDimensions() : null;
-                    if (!dims) return;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/resize?session=' + sessionId + '&cols=' + dims.cols + '&rows=' + dims.rows, { method: 'POST' })
-                        .catch(function(e) { console.warn('[omega-terminal] resize failed', e); });
-                }
-                function createSession() {
-                    showDisconnected(false);
-                    var dims = fitAddon ? fitAddon.proposeDimensions() : null;
-                    var cols = dims ? dims.cols : 80;
-                    var rows = dims ? dims.rows : 24;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/session?cols=' + cols + '&rows=' + rows, { method: 'POST' })
-                        .then(function(r) { return r.json(); })
-                        .then(function(data) {
-                            if (!data || !data.session_id) { showError('Server refused to start a terminal session: ' + (data && data.error ? data.error : 'no session_id')); showDisconnected(true); return; }
-                            sessionId = data.session_id;
-                            showConnected();
-                            connectStream();
-                            setTimeout(function() {
-                                sendResize();
-                                focusTerminal();
-                            }, 100);
-                        })
-                        .catch(function(err) {
-                            showError('Could not reach the terminal backend: ' + (err && err.message ? err.message : String(err)));
-                            showDisconnected(true);
-                            scheduleReconnect();
-                        });
-                }
-                function connectStream() {
-                    try {
-                        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-                        var evtSource = new EventSource('/api/vps/{{ vps['id'] }}/terminal/stream?session=' + sessionId);
-                        evtSource.onmessage = function(event) {
-                            if (event.data === '__TERMINAL_CLOSED__') {
-                                evtSource.close();
-                                showDisconnected(true);
-                                scheduleReconnect();
-                                return;
-                            }
-                            try {
-                                var bytes = Uint8Array.from(atob(event.data), function(c) { return c.charCodeAt(0); });
-                                term.write(bytes);
-                            } catch(e) {
-                                term.write(event.data);
-                            }
-                        };
-                        evtSource.onerror = function() {
-                            evtSource.close();
-                            showDisconnected(true);
-                            scheduleReconnect();
-                        };
-                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); scheduleReconnect(); }
-                }
-                var reconnectAttempts = 0;
-                var maxReconnectAttempts = 5;
-                function scheduleReconnect() {
-                    if (reconnectAttempts >= maxReconnectAttempts) {
-                        showError('Terminal connection could not be restored. Refresh the page to try again.');
+        function createSession() {
+            var myEpoch = ++epoch;
+            setStatus('Connecting...', '#fbbf24');
+            var dims = fitAddon ? fitAddon.proposeDimensions() : null;
+            var cols = (dims && dims.cols) ? dims.cols : 80;
+            var rows = (dims && dims.rows) ? dims.rows : 24;
+            fetch(API + '/session?cols=' + cols + '&rows=' + rows, { method: 'POST', credentials: 'same-origin' })
+                .then(function(r) {
+                    return r.text().then(function(t) {
+                        var data = null;
+                        try { data = JSON.parse(t); } catch (e) {}
+                        return { ok: r.ok, status: r.status, data: data, raw: t };
+                    });
+                })
+                .then(function(res) {
+                    if (myEpoch !== epoch) return;
+                    if (!res.data) {
+                        var hint = (res.status === 200 || res.status === 302) ? 'Login expired? Refresh and log in again.' : ('HTTP ' + res.status);
+                        showError('Server did not return a session (' + hint + ').');
+                        scheduleRetry(createSession, hint);
                         return;
                     }
-                    reconnectAttempts++;
-                    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000);
-                    showDisconnected(false);
-                    reconnectTimer = setTimeout(function() {
-                        reconnectAttempts++;
-                        createSession();
-                    }, delay);
-                }
-                function sendInput(data) {
-                    if (!sessionId || !data) return;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
-                        method: 'POST',
-                        body: data
-                    });
-                }
-                term.onData(sendInput);
-                var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
-                document.querySelectorAll('#mobile-keys button').forEach(function(button) {
-                    button.addEventListener('click', function() {
-                        sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
-                        term.focus();
-                    });
-                });
-                function onResize() {
-                    if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
-                    sendResize();
-                }
-                window.addEventListener('resize', onResize);
-                window.addEventListener('focus', function() {
-                    if (document.activeElement === document.body ||
-                        document.activeElement === terminalContainer ||
-                        terminalContainer.contains(document.activeElement)) {
-                        focusTerminal();
-                    }
-                });
-                createSession();
-            } catch(e) {
-                showError('Terminal failed to initialize: ' + e.message);
-                showDisconnected(true);
-                scheduleReconnect();
-            }
-        })();</script>
-</body>
-</html>.close();
-                            showDisconnected(true);
-                            scheduleReconnect();
-                        };
-                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); scheduleReconnect(); }
-                }
-                var reconnectAttempts = 0;
-                var maxReconnectAttempts = 5;
-                function scheduleReconnect() {
-                    if (reconnectAttempts >= maxReconnectAttempts) {
-                        showError('Terminal connection could not be restored. Refresh the page to try again.');
+                    if (!res.ok || !res.data.session_id) {
+                        showError(res.data.error || ('Server refused the session (HTTP ' + res.status + ')'));
+                        scheduleRetry(createSession, res.data.error || '');
                         return;
                     }
-                    reconnectAttempts++;
-                    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000);
-                    showDisconnected(false);
-                    reconnectTimer = setTimeout(function() {
-                        reconnectAttempts++;
-                        createSession();
-                    }, delay);
-                }
-                function sendInput(data) {
-                    if (!sessionId || !data) return;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
-                        method: 'POST',
-                        body: data
-                    });
-                }
-                term.onData(sendInput);
-                var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
-                document.querySelectorAll('#mobile-keys button').forEach(function(button) {
-                    button.addEventListener('click', function() {
-                        sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
-                        term.focus();
-                    });
+                    clearError();
+                    sessionId = res.data.session_id;
+                    gotData = false;
+                    connectStream(0);
+                })
+                .catch(function(err) {
+                    if (myEpoch !== epoch) return;
+                    showError('Could not reach the panel: ' + (err && err.message ? err.message : err));
+                    scheduleRetry(createSession, '');
                 });
-                function onResize() {
-                    if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
-                    sendResize();
+        }
+
+        function connectStream(streamFails) {
+            closeSource();
+            if (!sessionId) return;
+            var sid = sessionId;
+            var es = new EventSource(API + '/stream?session=' + encodeURIComponent(sid));
+            source = es;
+
+            es.onopen = function() {
+                if (es !== source) return;
+                setStatus('Connected', '#34d399');
+                sendResize();
+                focusTerm();
+                flushInput();
+                // Nudge the shell so a prompt shows even if nothing was printed yet.
+                clearTimeout(wakeTimer);
+                wakeTimer = setTimeout(function() {
+                    if (!gotData && sid === sessionId) sendInput(String.fromCharCode(13));
+                }, 1500);
+            };
+
+            es.onmessage = function(ev) {
+                if (es !== source) return;
+                if (ev.data === '__TERMINAL_CLOSED__') {
+                    closeSource();
+                    failures = 0;
+                    restartSession('Shell closed, starting a new session');
+                    return;
                 }
-                window.addEventListener('resize', onResize);
-                createSession();
-            } catch(e) {
-                showError('Terminal failed to initialize: ' + e.message);
-                showDisconnected(true);
-                scheduleReconnect();
-            }
-        })();</script>
+                gotData = true;
+                failures = 0;
+                try {
+                    var bin = atob(ev.data);
+                    var bytes = new Uint8Array(bin.length);
+                    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    term.write(bytes);
+                } catch (e) {
+                    term.write(ev.data);
+                }
+            };
+
+            es.onerror = function() {
+                if (es !== source) return;
+                closeSource();
+                if (streamFails >= 2) {
+                    // The old session is probably gone: start a fresh one.
+                    restartSession('Connection lost, starting a new session');
+                    return;
+                }
+                setStatus('Reconnecting...', '#fbbf24');
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(function() { connectStream(streamFails + 1); }, 1000 * (streamFails + 1));
+            };
+        }
+
+        window.addEventListener('beforeunload', function() { closeSource(); });
+        createSession();
+    })();
+    </script>
 </body>
 </html>"""}}
 EMBEDDED_CSS = """@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -11158,6 +11181,30 @@ def vps_detail(vps_id):
                 container_status = 'not_found'
     return render_template('vps_detail.html', vps=vps, node_name=(node['name'] if node else ''), node_id=(node['id'] if node else ''), container_status=container_status, snapshots=snapshots, shares=shares, shared_by=shared_by, is_owner=is_owner)
 terminal_sessions = {}
+_TERMINAL_IDLE_SECONDS = 180
+def _terminal_kill_session(session_id):
+    sess = terminal_sessions.pop(session_id, None)
+    if not sess:
+        return
+    try:
+        sess['proc'].terminate()
+    except Exception:
+        pass
+def _terminal_reaper():
+    """Kill shells whose browser tab went away (no stream attached for a while)."""
+    while True:
+        time.sleep(30)
+        now = time.time()
+        for sid, sess in list(terminal_sessions.items()):
+            detached = sess.get('detached_at')
+            if detached and now - detached > _TERMINAL_IDLE_SECONDS:
+                _terminal_kill_session(sid)
+_terminal_reaper_started = False
+def _terminal_start_reaper():
+    global _terminal_reaper_started
+    if not _terminal_reaper_started:
+        _terminal_reaper_started = True
+        threading.Thread(target=_terminal_reaper, name="terminal-reaper", daemon=True).start()
 @app.route('/vps/<int:vps_id>/terminal')
 @login_required
 def vps_terminal(vps_id):
@@ -11214,7 +11261,8 @@ def terminal_create_session(vps_id):
     os.close(slave_fd)
     session_id = str(uuid.uuid4())
     terminal_sessions[session_id] = {'master_fd': master_fd, 'proc': proc, 'vps_id': vps_id,
-                                     'askpass': askpass_path}
+                                     'askpass': askpass_path, 'gen': 0, 'detached_at': time.time()}
+    _terminal_start_reaper()
     def _cleanup():
         proc.wait()
         time.sleep(0.3)
@@ -11317,28 +11365,39 @@ def terminal_stream(vps_id):
             return jsonify({'error': str(exc)[:200]}), 502
         def proxy_stream():
             try:
-                for chunk in r.iter_content(chunk_size=4096):
+                for chunk in r.iter_content(chunk_size=None):
                     if chunk:
-                        yield chunk.decode(errors='replace')
+                        yield chunk
             except Exception:
                 app.logger.exception("Remote terminal stream interrupted for VPS %s", vps_id)
             finally:
                 r.close()
         resp = Response(proxy_stream(), mimetype='text/event-stream')
-        resp.headers['Cache-Control'] = 'no-cache'
+        resp.headers['Cache-Control'] = 'no-cache, no-transform'
         resp.headers['X-Accel-Buffering'] = 'no'
         return resp
     session_id = request.args.get('session')
     sess = terminal_sessions.get(session_id)
     if not sess:
         return (jsonify({'error': 'session not found'}), 404)
+    sess['gen'] = sess.get('gen', 0) + 1
+    my_gen = sess['gen']
+    sess['detached_at'] = None
     def generate():
         mfd = sess['master_fd']
         proc = sess['proc']
         last_keepalive = time.time()
-        while True:
-            timeout = max(0, 15 - (time.time() - last_keepalive))
-            r, _, _ = select.select([mfd], [], [], timeout)
+        # Padding comment makes proxies (Cloudflare/nginx) flush the headers right away.
+        yield ': ' + (' ' * 2048) + '\n\n'
+        try:
+          while True:
+            if sess.get('gen') != my_gen:
+                return
+            timeout = max(0, min(1, 15 - (time.time() - last_keepalive)))
+            try:
+                r, _, _ = select.select([mfd], [], [], timeout)
+            except (OSError, ValueError):
+                break
             if r:
                 try:
                     data = os.read(mfd, 4096)
@@ -11358,8 +11417,14 @@ def terminal_stream(vps_id):
             if time.time() - last_keepalive >= 15:
                 yield ': keepalive\n\n'
                 last_keepalive = time.time()
-        yield 'data: __TERMINAL_CLOSED__\n\n'
-    return Response(generate(), mimetype='text/event-stream')
+          yield 'data: __TERMINAL_CLOSED__\n\n'
+        finally:
+            if sess.get('gen') == my_gen:
+                sess['detached_at'] = time.time()
+    resp = Response(generate(), mimetype='text/event-stream')
+    resp.headers['Cache-Control'] = 'no-cache, no-transform'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    return resp
 @app.route('/schedules')
 @login_required
 def schedules():
