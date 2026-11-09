@@ -16964,8 +16964,8 @@ export DISPLAY="${DISPLAY:-:0}"
 export TERM=xterm-256color
 CON=__CONSOLE__
 OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no
-      -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o ConnectTimeout=10
-      -o ServerAliveInterval=30 -p __PORT__)
+      -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o ConnectTimeout=100
+      -o LogLevel=ERROR -o ServerAliveInterval=30 -p __PORT__)
 SSH=__SSH__
 started=$(date +%s)
 printf '\033[1;36mVizion Panel - Non-KVM VPS terminal\033[0m\n'
@@ -16974,13 +16974,13 @@ while true; do
   tail -n 15 -F "$CON" 2>/dev/null &
   TAILPID=$!
   n=0
-  until "$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null >/dev/null 2>&1; do
-    sleep 5
+  until err=$("$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null 2>&1); do
+    sleep 3
     n=$((n+1))
-    if [ $((n % 6)) -eq 0 ]; then
+    if [ $((n % 5)) -eq 0 ]; then
       el=$(( $(date +%s) - started ))
-      printf '\n\033[36m[Vizion] still booting (no KVM = slow) %dm%02ds - guest is %s\033[0m\n' \
-        $((el/60)) $((el%60)) "$( [ -s "$CON" ] && echo 'writing to its console' || echo 'silent, no console output yet' )"
+      printf '\n\033[36m[Vizion] %dm%02ds - SSH not ready: %s\033[0m\n' \
+        $((el/60)) $((el%60)) "$(printf '%s' "$err" | tail -n 1 | cut -c1-90)"
     fi
   done
   kill "$TAILPID" 2>/dev/null
