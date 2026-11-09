@@ -19283,6 +19283,87 @@ def _omega_nonkvm_pid_alive(name):
         return False
 
 
+def _omega_nonkvm_qemu_pid(name):
+    try:
+        with open(os.path.join(omega_nonkvm_state_dir(name), "qemu.pid"), encoding="utf-8") as handle:
+            pid = int(handle.read().strip() or 0)
+        if pid > 0:
+            os.kill(pid, 0)
+            return pid
+    except Exception:
+        pass
+    return 0
+
+
+def _omega_nonkvm_stats(name):
+    """CPU/RAM for a QEMU (Non-KVM) VPS, read from the host's qemu process.
+
+    Non-KVM guests are not Incus instances, so the Incus state API reports
+    nothing and the panel showed 0% CPU and 0 / 0 MB RAM forever.
+    """
+    stats = {'cpu_percent': 0.0, 'memory_used': 0, 'memory_limit': 0,
+             'memory_percent': 0.0, 'net_rx': 0, 'net_tx': 0, 'pids': 0}
+    limit_mb = 0
+    try:
+        with open(os.path.join(omega_nonkvm_state_dir(name), "state.env"), encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("RAM_MB="):
+                    limit_mb = int(line.split("=", 1)[1].strip().strip('"') or 0)
+    except Exception:
+        pass
+    stats['memory_limit'] = limit_mb * 1048576
+    pid = _omega_nonkvm_qemu_pid(name)
+    if not pid:
+        return stats
+    try:
+        with open("/proc/%d/status" % pid, encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    stats['memory_used'] = int(line.split()[1]) * 1024
+                elif line.startswith("Threads:"):
+                    stats['pids'] = int(line.split()[1])
+    except Exception:
+        pass
+    if stats['memory_limit'] and stats['memory_used'] > stats['memory_limit']:
+        stats['memory_used'] = stats['memory_limit']
+    if stats['memory_limit']:
+        stats['memory_percent'] = round(stats['memory_used'] / stats['memory_limit'] * 100, 2)
+    try:
+        def _ticks():
+            with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
+                fields = handle.read().rsplit(")", 1)[1].split()
+            return int(fields[11]) + int(fields[12])
+        vcpus = 1
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as handle:
+                parts = handle.read().decode("utf-8", "ignore").split("\0")
+            if "-smp" in parts:
+                vcpus = max(1, int(parts[parts.index("-smp") + 1].split(",")[0]))
+        except Exception:
+            pass
+        first, t0 = _ticks(), time.time()
+        time.sleep(0.4)
+        second, t1 = _ticks(), time.time()
+        hz = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        used = (second - first) / float(hz) / max(0.05, t1 - t0) / vcpus * 100.0
+        stats['cpu_percent'] = round(max(0.0, min(100.0, used)), 1)
+    except Exception:
+        pass
+    return stats
+
+
+_omega_lxc_get_stats_base = lxc_get_stats
+
+
+def lxc_get_stats(name):
+    try:
+        if omega_vps_kind(name) == "nonkvm":
+            return _omega_nonkvm_stats(name)
+    except Exception:
+        app.logger.debug("Non-KVM stats failed for %s", name, exc_info=True)
+    return _omega_lxc_get_stats_base(name)
+
+
 def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
     """Wait for a Non-KVM guest to answer SSH.
 
@@ -19355,4 +19436,3 @@ def _omega_static_no_cache(resp):
     except Exception:
         pass
     return resp
-
