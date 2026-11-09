@@ -16689,21 +16689,52 @@ if ! command -v sshx >/dev/null 2>&1; then
   tail -n 6 /tmp/sshx_install.log 2>/dev/null
   exit 0
 fi
+# sshx spawns a shell and prints its link on stdout; a few builds write
+# nothing at all when stdout is a plain file with no tty, which is exactly the
+# "sshx wrote nothing to /tmp/sshx_output.log" we saw. Give it a pty when the
+# image ships script(1), and fall back to plain redirection if it does not.
+export SHELL="${SHELL:-/bin/bash}"
+export TERM="${TERM:-xterm-256color}"
+omega_try_url() {
+  _n=0
+  while [ "$_n" -lt "$1" ]; do
+    if grep -Eo "https://sshx\.io/s/[A-Za-z0-9#?=_-]+" /tmp/sshx_output.log 2>/dev/null | head -n 1; then
+      return 0
+    fi
+    sleep 1
+    _n=$((_n + 1))
+  done
+  return 1
+}
+omega_start_sshx() {
+  if command -v script >/dev/null 2>&1; then
+    setsid script -qfc "sshx" /tmp/sshx_output.log >/dev/null 2>&1 </dev/null &
+  elif command -v setsid >/dev/null 2>&1; then
+    setsid sshx >/tmp/sshx_output.log 2>&1 </dev/null &
+  else
+    nohup sshx >/tmp/sshx_output.log 2>&1 </dev/null &
+  fi
+  echo $! > /tmp/sshx.pid 2>/dev/null || true
+}
+omega_start_sshx
+if omega_try_url 50; then exit 0; fi
+# Second attempt without the pty wrapper, in case script(1) itself is broken.
+for _omega_pid in $(pgrep -x sshx 2>/dev/null); do kill "$_omega_pid" 2>/dev/null || true; done
+sleep 1
+rm -f /tmp/sshx_output.log
 if command -v setsid >/dev/null 2>&1; then
   setsid sshx >/tmp/sshx_output.log 2>&1 </dev/null &
 else
   nohup sshx >/tmp/sshx_output.log 2>&1 </dev/null &
 fi
 echo $! > /tmp/sshx.pid 2>/dev/null || true
-i=0
-while [ "$i" -lt 40 ]; do
-  grep -Eo "https://sshx\.io/s/[A-Za-z0-9#?=_-]+" /tmp/sshx_output.log 2>/dev/null && exit 0
-  sleep 1
-  i=$((i + 1))
-done
+if omega_try_url 45; then exit 0; fi
 echo "OMEGA_SSHX_NO_URL"
 sshx --version 2>&1 | head -n 2
-tail -n 20 /tmp/sshx_output.log 2>/dev/null
+echo "logbytes: $(wc -c </tmp/sshx_output.log 2>/dev/null || echo 0)"
+tail -c 800 /tmp/sshx_output.log 2>/dev/null | cat -v
+pgrep -a sshx 2>/dev/null | head -n 2 | sed 's/^/proc: /'
+echo "fg: $(timeout 20 sshx </dev/null 2>&1 | head -c 600 | tr '\n' ' ')"
 exit 0
 """
         command = script
@@ -16717,45 +16748,61 @@ exit 0
         )
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="ignore")
-        if "sshx.io" not in str(output):
-            detail = " ".join(str(output or "").split())[-320:]
-            if not detail or exit_code in (124, 137, 143):
-                # The step was killed before it could explain itself, so ask the
-                # guest the two questions that matter: did the installer leave a
-                # log, and can it resolve/reach sshx.io at all?
+        raw = str(output or "")
+        url_re = r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+"
+        match = _re.search(url_re, raw)
+        if not match and "OMEGA_SSHX_NO_" not in raw and exit_code not in (124, 137, 143):
+            # sshx sometimes announces its link a little after the step that
+            # started it has already returned, so poll the guest log briefly
+            # instead of failing on the first empty read.
+            for _ in range(9):
+                time.sleep(5)
                 try:
-                    _, diag = lxc_attach(
+                    _, late = lxc_attach(
                         container_id,
-                        "tail -n 6 /tmp/sshx_install.log 2>/dev/null; "
-                        "getent hosts sshx.io >/dev/null 2>&1 && echo NET=ok || echo NET=no-dns; "
-                        "curl -sS -m 8 -o /dev/null -w 'HTTP %{http_code}\\n' https://sshx.io/get 2>&1 | tail -n 1",
-                        timeout=25,
+                        'grep -Eo "https://sshx\\.io/s/[A-Za-z0-9#?=_-]+" '
+                        '/tmp/sshx_output.log 2>/dev/null | head -n 1',
+                        timeout=15,
                     )
-                    diag = " ".join(str(diag or "").split())[-260:]
-                    if diag:
-                        detail = (detail + " \u2014 " if detail else "") + "guest check: " + diag
                 except Exception:
-                    app.logger.debug("SSHX guest diagnosis failed", exc_info=True)
-            if not detail:
-                detail = "no output from the guest"
-            if exit_code in (124, 137, 143) and "no output" in detail:
-                detail += (
-                    " — the SSHX step was killed after %ss before it printed a link. "
-                    "The guest is either still booting or it cannot reach sshx.io "
-                    "(no DNS/internet inside the VPS)."
-                    % os.environ.get("OMEGA_SSHX_TIMEOUT", "180")
+                    app.logger.debug("SSHX late link poll failed", exc_info=True)
+                    break
+                if isinstance(late, bytes):
+                    late = late.decode("utf-8", errors="ignore")
+                found = _re.search(url_re, str(late or ""))
+                if found:
+                    match = found
+                    break
+        if not match:
+            detail = " ".join(raw.split())[-420:]
+            try:
+                _, log_tail = lxc_attach(
+                    container_id,
+                    'tail -c 700 /tmp/sshx_output.log 2>/dev/null | cat -v',
+                    timeout=15,
                 )
-            raise RuntimeError(f"Could not start SSHX in VPS (exit {exit_code}): {detail}")
-        match = _re.search(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+", str(output))
-        if not match:
-            # Some sshx builds write the link after initial startup to the log.
-            exit_code, output = lxc_attach(container_id, 'cat /tmp/sshx_output.log 2>/dev/null', timeout=15)
-            if isinstance(output, bytes):
-                output = output.decode("utf-8", errors="ignore")
-            match = _re.search(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+", str(output))
-        if not match:
-            detail = " ".join(str(output or "").split())[-320:] or "sshx wrote nothing to /tmp/sshx_output.log"
-            raise RuntimeError(f"SSHX started, but no share URL was returned: {detail}")
+                if isinstance(log_tail, bytes):
+                    log_tail = log_tail.decode("utf-8", errors="ignore")
+                log_tail = " ".join(str(log_tail or "").split())[-240:]
+                if log_tail:
+                    detail = (detail + " | sshx log: " if detail else "sshx log: ") + log_tail
+            except Exception:
+                app.logger.debug("SSHX log read failed", exc_info=True)
+            if "OMEGA_SSHX_NO_NET" in raw:
+                raise RuntimeError(
+                    "The VPS has no working DNS/internet, so sshx could not be "
+                    "downloaded: " + (detail or "no details"))
+            if "OMEGA_SSHX_NO_URL" in raw:
+                raise RuntimeError(
+                    "sshx ran inside the VPS but never printed a share link: "
+                    + (detail or "empty sshx log"))
+            if exit_code in (124, 137, 143) and not detail:
+                detail = ("the SSHX step was killed after %ss before it printed a "
+                          "link — the guest is probably still booting"
+                          % os.environ.get("OMEGA_SSHX_TIMEOUT", "180"))
+            raise RuntimeError(
+                "Could not start SSHX in VPS (exit %s): %s"
+                % (exit_code, detail or "no output from the guest"))
         ssh_command = match.group(0)
         _step(90, "Saving the sshx.io share link\u2026")
     else:

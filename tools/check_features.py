@@ -390,6 +390,15 @@ check("non-kvm boot wait shows the console tail on failure",
       "Console tail" in wait_src, "")
 check("sshx job waits for a non-kvm boot",
       "OMEGA_NONKVM_SSH_WAIT" in _inspect.getsource(panel._omega_start_sshx_job), "")
+check("sshx starts under a pty and retries without one",
+      "script -qfc" in ensure_src and ensure_src.count("setsid sshx") >= 2, "")
+check("sshx failure reports a log size and a foreground try",
+      "logbytes:" in ensure_src and "fg: " in ensure_src, "")
+bot_src = _inspect.getsource(panel._omega_bot_ensure_sshx)
+check("sshx no-url error keeps the guest log tail",
+      "| sshx log: " in bot_src and "never printed a share link" in bot_src, "")
+check("sshx waits briefly for a late link",
+      "late link poll failed" in bot_src, "")
 check("create flow keeps sshx progress inside 92-99%",
       "92 + int(" in _inspect.getsource(panel._create_vps_for_user), "")
 
