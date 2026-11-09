@@ -8582,7 +8582,41 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                 var term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'Menlo, Monaco, "Courier New", monospace', theme: { background: '#000', foreground: '#f0f0f0' } });
                 var fitAddon = (typeof FitAddon !== 'undefined') ? new FitAddon.FitAddon() : null;
                 if (fitAddon) term.loadAddon(fitAddon);
-                term.open(document.getElementById('terminal-container'));
+                var terminalContainer = document.getElementById('terminal-container');
+                term.open(terminalContainer);
+
+                // Keep xterm's hidden textarea focused so desktop and mobile
+                // keyboards send input to the terminal.
+                function focusTerminal() {
+                    try {
+                        if (term.textarea) {
+                            term.textarea.removeAttribute('readonly');
+                            term.textarea.setAttribute('aria-label', 'Terminal input');
+                            term.textarea.setAttribute('autocomplete', 'off');
+                            term.textarea.setAttribute('autocapitalize', 'off');
+                            term.textarea.setAttribute('spellcheck', 'false');
+                        }
+                        term.focus();
+                    } catch(e) {
+                        console.warn('[omega-terminal] focus failed', e);
+                    }
+                }
+
+                terminalContainer.addEventListener('pointerdown', function() {
+                    focusTerminal();
+                });
+                terminalContainer.addEventListener('click', function() {
+                    focusTerminal();
+                });
+                terminalContainer.addEventListener('touchend', function() {
+                    focusTerminal();
+                }, { passive: true });
+
+                // xterm creates its input textarea during open(); focus after
+                // layout so the initial focus is not lost during initialization.
+                requestAnimationFrame(focusTerminal);
+                setTimeout(focusTerminal, 150);
+
                 if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
                 var sessionId = null;
                 var reconnectTimer = null;
@@ -8617,7 +8651,10 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                             sessionId = data.session_id;
                             showConnected();
                             connectStream();
-                            setTimeout(function() { sendResize(); }, 100);
+                            setTimeout(function() {
+                                sendResize();
+                                focusTerminal();
+                            }, 100);
                         })
                         .catch(function(err) {
                             showError('Could not reach the terminal backend: ' + (err && err.message ? err.message : String(err)));
@@ -8685,6 +8722,13 @@ ubuntu-26.04    # Ubuntu 26.04</div>
                     sendResize();
                 }
                 window.addEventListener('resize', onResize);
+                window.addEventListener('focus', function() {
+                    if (document.activeElement === document.body ||
+                        document.activeElement === terminalContainer ||
+                        terminalContainer.contains(document.activeElement)) {
+                        focusTerminal();
+                    }
+                });
                 createSession();
             } catch(e) {
                 showError('Terminal failed to initialize: ' + e.message);
