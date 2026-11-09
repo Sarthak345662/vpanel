@@ -16972,8 +16972,7 @@ printf '\033[1;36mVizion Panel - Non-KVM VPS terminal\033[0m\n'
 while true; do
   until "$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null >/dev/null 2>&1; do
     el=$(( $(date +%s) - started ))
-    last=$(tail -n 1 "$CON" 2>/dev/null | tr -d '\r\033' | cut -c1-50)
-    printf '\r\033[KWaiting for the guest to boot (no KVM = slow) %dm%02ds  %s' $((el/60)) $((el%60)) "$last"
+    printf '\033[2K\rBooting guest (no KVM, slow) %dm%02ds' $((el/60)) $((el%60))
     sleep 5
   done
   printf '\n\033[1;32mGuest is up. Connecting...\033[0m\n'
@@ -16993,40 +16992,58 @@ done
 
     log_path = os.path.join(state_dir, "sshx-bridge.log")
     open(log_path, "w").close()
-    inner = "%s --shell %s" % (shlex.quote(sshx), shlex.quote(shell_path))
+    # The sshx tab title defaults to "user@hostname" (omega-panel@server);
+    # show the panel's own name (Settings > site name) and the VPS instead.
+    site_name = ""
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT site_name FROM settings LIMIT 1").fetchone()
+            site_name = str(row["site_name"] or "").strip() if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        site_name = ""
+    title = ("%s | %s" % (site_name or "Vizion Panel", name))[:60]
     script_bin = shutil.which("script")
-    if script_bin:
-        # sshx wants a pty; a never-ending stdin keeps `script` alive after the
-        # panel restarts (the bridge is its own process group).
-        runner = "sleep 2147483647 | %s -qfc %s %s" % (
-            shlex.quote(script_bin), shlex.quote(inner), shlex.quote(log_path))
-    else:
-        runner = "sleep 2147483647 | %s >%s 2>&1" % (inner, shlex.quote(log_path))
     env = dict(os.environ)
     env["HOME"] = env.get("HOME") or "/var/lib/omega-panel"
     env["TERM"] = "xterm-256color"
-    _step(60, "Starting the SSHX terminal bridge\u2026")
-    proc = subprocess.Popen(["/bin/sh", "-c", runner], stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            env=env, start_new_session=True)
-    with open(os.path.join(state_dir, "sshx-bridge.pid"), "w", encoding="utf-8") as handle:
-        handle.write(str(proc.pid))
-
     url_re = re.compile(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+")
-    deadline = time.time() + max(20, int(timeout))
     text = ""
-    while time.time() < deadline:
-        try:
-            with open(log_path, "rb") as handle:
-                text = handle.read().decode("utf-8", errors="ignore")
-        except OSError:
-            text = ""
-        found = url_re.search(text)
-        if found:
-            return found.group(0)
-        if proc.poll() is not None and not _omega_nonkvm_bridge_alive(name):
-            break
-        time.sleep(1)
+    _step(60, "Starting the SSHX terminal bridge\u2026")
+    # Second attempt drops --name for an sshx build that does not know it.
+    for use_name in (True, False):
+        inner = "%s %s--shell %s" % (shlex.quote(sshx),
+                                    ("--name %s " % shlex.quote(title)) if use_name else "",
+                                    shlex.quote(shell_path))
+        open(log_path, "w").close()
+        if script_bin:
+            # sshx wants a pty; a never-ending stdin keeps `script` alive after
+            # the panel restarts (the bridge is its own process group).
+            runner = "sleep 2147483647 | %s -qfc %s %s" % (
+                shlex.quote(script_bin), shlex.quote(inner), shlex.quote(log_path))
+        else:
+            runner = "sleep 2147483647 | %s >%s 2>&1" % (inner, shlex.quote(log_path))
+        proc = subprocess.Popen(["/bin/sh", "-c", runner], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=env, start_new_session=True)
+        with open(os.path.join(state_dir, "sshx-bridge.pid"), "w", encoding="utf-8") as handle:
+            handle.write(str(proc.pid))
+        deadline = time.time() + (max(20, int(timeout)) if not use_name else 25)
+        while time.time() < deadline:
+            try:
+                with open(log_path, "rb") as handle:
+                    text = handle.read().decode("utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            found = url_re.search(text)
+            if found:
+                return found.group(0)
+            if proc.poll() is not None and not _omega_nonkvm_bridge_alive(name):
+                break
+            time.sleep(1)
+        _omega_nonkvm_bridge_stop(name)
     tail = " ".join(text.split())[-300:]
     _omega_nonkvm_bridge_stop(name)
     raise RuntimeError("sshx did not print a share link on the host (check the panel host's internet): %s"
