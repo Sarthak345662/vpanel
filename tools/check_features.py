@@ -402,6 +402,56 @@ check("sshx waits briefly for a late link",
 check("create flow keeps sshx progress inside 92-99%",
       "92 + int(" in _inspect.getsource(panel._create_vps_for_user), "")
 
+# Guest networking for real: with only loopback inside, the panel must hand the
+# guest a static address from the bridge subnet and every script must be valid.
+import subprocess as _subproc
+
+
+class _FakeProc:
+    def __init__(self, rc=1, out=b""):
+        self.returncode, self.stdout, self.stderr = rc, out, b""
+
+
+def _fake_incus(record):
+    def run(cmd, **kw):
+        record.append(list(cmd))
+        text = " ".join(str(c) for c in cmd)
+        if "config show" in text:
+            return _FakeProc(0, b"devices:\n  eth0:\n    network: incusbr0\n")
+        if "ipv4.address" in text:
+            return _FakeProc(0, b"10.9.0.1/24\n")
+        if "ipv4.gateway" in text:
+            return _FakeProc(0, b"10.9.0.1\n")
+        return _FakeProc(1, b"")
+    return run
+
+
+_net_calls = []
+_real_run, _real_sleep = _subproc.run, panel.time.sleep
+_subproc.run = _fake_incus(_net_calls)
+panel.time.sleep = lambda *a, **k: None
+try:
+    panel._lxc_fix_networking("omega-net-check")
+finally:
+    _subproc.run, panel.time.sleep = _real_run, _real_sleep
+
+_guest_cmds = [c[-1] for c in _net_calls
+               if c[:4] == ["incus", "exec", "omega-net-check", "--"]]
+check("guest networking asks the DHCP clients for a lease",
+      any("dhclient" in c for c in _guest_cmds), "")
+check("guest networking falls back to a static bridge address",
+      any("ip addr add 10.9.0." in c for c in _guest_cmds), "")
+_parse_ok = True
+for _body in _guest_cmds:
+    if _real_run(["sh", "-n", "-c", _body],
+                 capture_output=True, text=True).returncode:
+        _parse_ok = False
+check("every guest networking script parses in sh", _parse_ok, "")
+check("sshx script brings eth0 up before downloading",
+      "ip -4 -o addr show scope global" in ensure_src and "dhclient" in ensure_src, "")
+check("sshx network failure shows the interface address",
+      "addr: /" in ensure_src, "")
+
 print()
 if failures:
     print("FAILURES:", len(failures))

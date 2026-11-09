@@ -73,48 +73,164 @@ def _lxd_request(method, path, data=None, timeout=30):
     finally:
         conn.close()
 
+def _omega_guest_eth0_ip(name):
+    """First global IPv4 inside the guest, or "" when it only has loopback."""
+    import subprocess as _sp
+    cmd = ("ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | head -n 1; "
+           "ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | head -n 1")
+    try:
+        out = _sp.run(['incus', 'exec', name, '--', 'sh', '-c', cmd],
+                      capture_output=True, timeout=15).stdout.decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    for line in out.split():
+        if line and not line.startswith("127."):
+            return line.strip()
+    return ""
+
+
+def _omega_lxc_net_info(name):
+    """Bridge subnet and gateway used by the guest, best effort."""
+    import subprocess as _sp
+    bridge = ""
+    try:
+        cfg = _sp.run(['incus', 'config', 'show', name],
+                      capture_output=True, timeout=15).stdout.decode("utf-8", "ignore")
+        found = re.search(r"^\s*network:\s*(\S+)\s*$", cfg, re.M)
+        if found:
+            bridge = found.group(1)
+    except Exception:
+        pass
+    for candidate in ([bridge] if bridge else []) + ["incusbr0", "lxdbr0"]:
+        try:
+            addr = _sp.run(['incus', 'network', 'get', candidate, 'ipv4.address'],
+                           capture_output=True,
+                           timeout=10).stdout.decode("utf-8", "ignore").strip()
+        except Exception:
+            continue
+        if not addr or "/" not in addr or addr.lower().startswith("none"):
+            continue
+        gateway = ""
+        try:
+            gateway = _sp.run(['incus', 'network', 'get', candidate, 'ipv4.gateway'],
+                              capture_output=True,
+                              timeout=10).stdout.decode("utf-8", "ignore").strip()
+        except Exception:
+            pass
+        net, _, prefix = addr.partition("/")
+        if not gateway or gateway in ("auto", "none"):
+            gateway = net
+        return {"bridge": candidate, "net": net,
+                "prefix": prefix or "24", "gateway": gateway}
+    return {}
+
+
 def _lxc_fix_networking(name):
+    """Give the guest a working link: address, default route and resolvers.
+
+    Minimal images came up with only 127.0.0.1 on eth0 - no DHCP client ever
+    ran - so sshx could neither resolve nor download anything, and a fix that
+    only rewrote /etc/resolv.conf could never work. Ask for a lease from
+    whatever client the image has, then fall back to a static address from the
+    bridge's own subnet, and only then repair the resolvers.
+    """
     try:
         import subprocess as _sp
-        _sp.run(['incus', 'exec', name, '--', 'sh', '-c', """cat > /opt/udhcpc.sh << 'SCRIPT'
-#!/bin/sh
-case "$1" in
-  bound|renew)
-    ip addr add $ip/$subnet dev $interface 2>/dev/null
-    [ -n "$router" ] && ip route add default via $router dev $interface 2>/dev/null
-    if [ -n "$dns" ]; then
-      > /etc/resolv.conf
-      for ns in $dns; do
-        echo "nameserver $ns" >> /etc/resolv.conf
-      done
-    fi
-    ;;
-  deconfig)
-    ip addr flush dev $interface 2>/dev/null
-    ;;
-esac
-SCRIPT
-chmod 755 /opt/udhcpc.sh"""], timeout=30, capture_output=True)
-        for _ in range(15):
-            r = _sp.run(['incus', 'exec', name, '--', 'ip', 'addr', 'show', 'eth0'], capture_output=True, timeout=10)
-            if b'inet ' in r.stdout:
-                break
-            _sp.run(['incus', 'exec', name, '--', 'busybox', 'udhcpc', '-i', 'eth0', '-n', '-s', '/opt/udhcpc.sh'], timeout=15, capture_output=True)
-            time.sleep(2)
-        _sp.run(['incus', 'exec', name, '--', 'sh', '-c', """
-if ! getent hosts deb.debian.org >/dev/null 2>&1; then
-  mkdir -p /etc/systemd/resolved.conf.d 2>/dev/null || true
-  printf '[Resolve]\\nDNS=1.1.1.1 8.8.8.8\\n' > /etc/systemd/resolved.conf.d/omega.conf 2>/dev/null || true
-  systemctl restart systemd-resolved >/dev/null 2>&1 || true
-  if ! getent hosts deb.debian.org >/dev/null 2>&1; then
-    systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
-    rm -f /etc/resolv.conf 2>/dev/null || true
-    printf 'nameserver 1.1.1.1\\nnameserver 8.8.8.8\\nnameserver 9.9.9.9\\noptions timeout:2 attempts:2\\n' > /etc/resolv.conf 2>/dev/null || true
-  fi
-fi
-"""], timeout=15, capture_output=True)
-    except:
+        note = ""
+
+        def guest(cmd, timeout=25):
+            try:
+                return _sp.run(['incus', 'exec', name, '--', 'sh', '-c', cmd],
+                               capture_output=True, timeout=timeout)
+            except Exception:
+                return None
+
+        # 1. Bring the link up and ask for a lease, whichever client exists.
+        if not _omega_guest_eth0_ip(name):
+            guest("ip link set eth0 up 2>/dev/null || true")
+            dhcp = (
+                "for c in 'dhclient -1 -q eth0' 'busybox udhcpc -i eth0 -n -q -t 5' "
+                "'dhcpcd -1 -t 8 eth0' 'ifup eth0' 'networkctl reconfigure eth0' "
+                "'netplan apply'; do "
+                "set -- $c; command -v \"$1\" >/dev/null 2>&1 || continue; "
+                "timeout 12 sh -c \"$c\" >/dev/null 2>&1 || true; "
+                "ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet ' && exit 0; "
+                "done; exit 0")
+            for _ in range(3):
+                guest(dhcp, timeout=90)
+                if _omega_guest_eth0_ip(name):
+                    note = "dhcp"
+                    break
+                time.sleep(2)
+
+        # 2. Still nothing: a static address inside the bridge's own subnet.
+        if not _omega_guest_eth0_ip(name):
+            info = _omega_lxc_net_info(name)
+            if info:
+                octets = info["net"].split(".")
+                seed = sum(ord(ch) for ch in str(name))
+                chosen = ""
+                for off in range(10):
+                    host = 150 + ((seed * 7 + off) % 100)
+                    cand = "%s.%s.%s.%d" % (octets[0], octets[1], octets[2], host)
+                    try:
+                        busy = _sp.run(['ping', '-c', '1', '-W', '1', cand],
+                                       capture_output=True, timeout=6).returncode == 0
+                    except Exception:
+                        busy = False
+                    if not busy:
+                        chosen = cand
+                        break
+                if chosen:
+                    addr = "%s/%s" % (chosen, info["prefix"])
+                    # Persist for reboots: ifupdown and systemd-networkd on top
+                    # of the live configuration.
+                    script = chr(10).join([
+                        "ip link set eth0 up 2>/dev/null || true",
+                        "ip addr flush dev eth0 2>/dev/null || true",
+                        "ip addr add " + addr + " dev eth0",
+                        "ip route replace default via " + info["gateway"] + " dev eth0",
+                        "mkdir -p /etc/network/interfaces.d 2>/dev/null || true",
+                        "{ echo auto eth0; echo iface eth0 inet static; "
+                        "echo '    address " + addr + "'; "
+                        "echo '    gateway " + info["gateway"] + "'; "
+                        "echo '    dns-nameservers 1.1.1.1 8.8.8.8'; } "
+                        "> /etc/network/interfaces.d/omega-eth0 2>/dev/null || true",
+                        "mkdir -p /etc/systemd/network 2>/dev/null || true",
+                        "{ echo '[Match]'; echo Name=eth0; echo; echo '[Network]'; "
+                        "echo Address=" + addr + "; "
+                        "echo Gateway=" + info["gateway"] + "; "
+                        "echo DNS=1.1.1.1; echo DNS=8.8.8.8; } "
+                        "> /etc/systemd/network/10-omega-eth0.network 2>/dev/null || true",
+                        "rm -f /etc/resolv.conf 2>/dev/null || true",
+                        "{ echo 'nameserver 1.1.1.1'; "
+                        "echo 'nameserver 8.8.8.8'; } "
+                        "> /etc/resolv.conf 2>/dev/null || true",
+                    ])
+                    guest(script, timeout=40)
+                    note = "static " + chosen
+
+        # 3. Resolvers: systemd-resolved usually points at its own stub with
+        #    nothing behind it, so hand it an upstream before giving up on it.
+        guest(chr(10).join([
+            "if getent hosts deb.debian.org >/dev/null 2>&1; then exit 0; fi",
+            "mkdir -p /etc/systemd/resolved.conf.d 2>/dev/null || true",
+            "{ echo '[Resolve]'; echo 'DNS=1.1.1.1 8.8.8.8'; } "
+            "> /etc/systemd/resolved.conf.d/omega.conf 2>/dev/null || true",
+            "systemctl restart systemd-resolved >/dev/null 2>&1 || true",
+            "if getent hosts deb.debian.org >/dev/null 2>&1; then exit 0; fi",
+            "systemctl disable --now systemd-resolved >/dev/null 2>&1 || true",
+            "rm -f /etc/resolv.conf 2>/dev/null || true",
+            "{ echo 'nameserver 1.1.1.1'; echo 'nameserver 8.8.8.8'; "
+            "echo 'nameserver 9.9.9.9'; echo 'options timeout:2 attempts:2'; } "
+            "> /etc/resolv.conf 2>/dev/null || true",
+        ]), timeout=20)
+        if note:
+            app.logger.info("Guest networking repaired for %s: %s", name, note)
+    except Exception:
         pass
+
+
 def _parse_ram_to_bytes(ram_str):
     if not ram_str:
         return 2147483648
@@ -16643,6 +16759,18 @@ rm -f /tmp/sshx_output.log
 # DNS first: images whose /etc/resolv.conf points at the systemd-resolved stub
 # (127.0.0.53) with nothing listening could not resolve sshx.io or the apt
 # mirrors, which surfaced as "curl: (28) Resolving timed out".
+# Some images boot with only 127.0.0.1 on eth0 because no DHCP client ever
+# ran; nothing resolves then and no download can work.
+if ! ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet '; then
+  ip link set eth0 up 2>/dev/null || true
+  for _omega_c in 'dhclient -1 -q eth0' 'busybox udhcpc -i eth0 -n -q -t 5' \
+                   'dhcpcd -1 -t 8 eth0' 'ifup eth0' 'netplan apply'; do
+    set -- $_omega_c
+    command -v "$1" >/dev/null 2>&1 || continue
+    timeout 12 sh -c "$_omega_c" >/dev/null 2>&1 || true
+    ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet ' && break
+  done
+fi
 if ! getent hosts sshx.io >/dev/null 2>&1; then
   mkdir -p /etc/systemd/resolved.conf.d 2>/dev/null || true
   printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\n' > /etc/systemd/resolved.conf.d/omega.conf 2>/dev/null || true
@@ -16663,6 +16791,7 @@ if ! command -v sshx >/dev/null 2>&1; then
     if ! curl -fsS --connect-timeout 8 --max-time 25 -o /dev/null https://sshx.io/get 2>/tmp/sshx_net.log; then
       echo "OMEGA_SSHX_NO_NET"
       grep -v '^#' /etc/resolv.conf 2>/dev/null | grep -v '^$' | head -n 3 | sed 's/^/dns: /'
+      ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | head -n 2 | sed 's/^/addr: /'
       ip -4 addr show 2>/dev/null | grep -o 'inet [0-9.]*' | head -n 2 | sed 's/^/if: /'
       ip route 2>/dev/null | head -n 2 | sed 's/^/route: /'
       tail -n 2 /tmp/sshx_net.log 2>/dev/null
