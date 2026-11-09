@@ -16970,11 +16970,20 @@ SSH=__SSH__
 started=$(date +%s)
 printf '\033[1;36mVizion Panel - Non-KVM VPS terminal\033[0m\n'
 while true; do
+  printf '\033[33mInput is disabled until the guest finishes booting. Live boot log:\033[0m\n'
+  tail -n 15 -F "$CON" 2>/dev/null &
+  TAILPID=$!
+  n=0
   until "$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null >/dev/null 2>&1; do
-    el=$(( $(date +%s) - started ))
-    printf '\033[2K\rBooting guest (no KVM, slow) %dm%02ds' $((el/60)) $((el%60))
     sleep 5
+    n=$((n+1))
+    if [ $((n % 6)) -eq 0 ]; then
+      el=$(( $(date +%s) - started ))
+      printf '\n\033[36m[Vizion] still booting (no KVM = slow) %dm%02ds - guest is %s\033[0m\n' \
+        $((el/60)) $((el%60)) "$( [ -s "$CON" ] && echo 'writing to its console' || echo 'silent, no console output yet' )"
+    fi
   done
+  kill "$TAILPID" 2>/dev/null
   printf '\n\033[1;32mGuest is up. Connecting...\033[0m\n'
   "$SSH" -tt "${OPTS[@]}" root@127.0.0.1 'TERM=xterm-256color exec /bin/bash -l'
   printf '\n\033[33mConnection closed. Reconnecting in 3s...\033[0m\n'
