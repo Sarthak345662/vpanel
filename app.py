@@ -16810,8 +16810,13 @@ def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, rep
             except Exception:
                 app.logger.debug("Guest networking repair failed for %s",
                                  container_id, exc_info=True)
-        if force:
-            lxc_attach(container_id, "pkill -x sshx >/dev/null 2>&1; rm -f /tmp/sshx_output.log", timeout=20)
+        if force and omega_vps_kind(container_id) != "nonkvm":
+            # A Non-KVM guest may still be booting here and would raise; the
+            # script below kills any old sshx itself once SSH answers.
+            try:
+                lxc_attach(container_id, "pkill -x sshx >/dev/null 2>&1; rm -f /tmp/sshx_output.log", timeout=20)
+            except Exception:
+                app.logger.debug("pre-SSHX cleanup failed for %s", container_id, exc_info=True)
         # Keep this script simple enough for /bin/sh inside the guest, but never
         # let it exit non-zero silently: every failure prints a marker and the
         # tail of its own log, so the panel can show the real reason.
@@ -18368,7 +18373,8 @@ def _omega_ssh_exec(port, password, command, timeout=60):
         })
         cmd = [ssh, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
-               "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=10",
+               "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=45",
+               "-o", "ServerAliveInterval=15",
                "-p", str(port), "root@127.0.0.1", command]
         proc = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -19295,6 +19301,19 @@ def _omega_nonkvm_qemu_pid(name):
     return 0
 
 
+def _omega_nonkvm_cpu_ticks(name):
+    """Coarse CPU time used so far by the guest's QEMU process (0 if unknown)."""
+    pid = _omega_nonkvm_qemu_pid(name)
+    if not pid:
+        return 0
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
+            fields = handle.read().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) // 50
+    except Exception:
+        return 0
+
+
 def _omega_nonkvm_stats(name):
     """CPU/RAM for a QEMU (Non-KVM) VPS, read from the host's qemu process.
 
@@ -19382,8 +19401,9 @@ def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
     # straight away instead of burning the whole wait window.
     console_size = _omega_nonkvm_console_size(name)
     console_changed = time.time()
+    last_ticks = _omega_nonkvm_cpu_ticks(name)
     while time.time() < deadline:
-        code, output = _omega_ssh_exec(port, password, "true", timeout=15)
+        code, output = _omega_ssh_exec(port, password, "true", timeout=60)
         if code == 0:
             return True
         last = " ".join(str(output or "").split())[-200:]
@@ -19393,8 +19413,13 @@ def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
             )
         now = time.time()
         current_size = _omega_nonkvm_console_size(name)
-        if current_size != console_size:
+        cpu_ticks = _omega_nonkvm_cpu_ticks(name)
+        if current_size != console_size or cpu_ticks != last_ticks:
+            # Ubuntu cloud images print little to the serial console after
+            # systemd starts, so a quiet console alone is not a stalled boot:
+            # the QEMU process burning CPU means the guest is still working.
             console_size = current_size
+            last_ticks = cpu_ticks
             console_changed = now
         elif now - console_changed > 300 and now - started > 180:
             tail = _omega_nonkvm_console_tail(name, 240)
