@@ -439,6 +439,8 @@ _guest_cmds = [c[-1] for c in _net_calls
                if c[:4] == ["incus", "exec", "omega-net-check", "--"]]
 check("guest networking asks the DHCP clients for a lease",
       any("dhclient" in c for c in _guest_cmds), "")
+check("guest networking tries a networkd DHCP profile",
+      any("10-omega-dhcp.network" in c for c in _guest_cmds), "")
 check("guest networking falls back to a static bridge address",
       any("ip addr add 10.9.0." in c for c in _guest_cmds), "")
 _parse_ok = True

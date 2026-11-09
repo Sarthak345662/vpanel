@@ -163,7 +163,23 @@ def _lxc_fix_networking(name):
                     break
                 time.sleep(2)
 
-        # 2. Still nothing: a static address inside the bridge's own subnet.
+        # 2. networkd images ignore ifupdown, so give networkd a DHCP profile.
+        if not _omega_guest_eth0_ip(name):
+            guest(chr(10).join([
+                "mkdir -p /etc/systemd/network 2>/dev/null || true",
+                "{ echo '[Match]'; echo Name=eth0; echo; echo '[Network]'; "
+                "echo DHCP=yes; } "
+                "> /etc/systemd/network/10-omega-dhcp.network 2>/dev/null || true",
+                "systemctl enable --now systemd-networkd >/dev/null 2>&1 || true",
+                "systemctl restart systemd-networkd >/dev/null 2>&1 || true",
+            ]), timeout=30)
+            for _ in range(5):
+                time.sleep(2)
+                if _omega_guest_eth0_ip(name):
+                    note = "networkd-dhcp"
+                    break
+
+        # 3. Last resort: a static address inside the bridge's own subnet.
         if not _omega_guest_eth0_ip(name):
             info = _omega_lxc_net_info(name)
             if info:
@@ -210,7 +226,13 @@ def _lxc_fix_networking(name):
                     guest(script, timeout=40)
                     note = "static " + chosen
 
-        # 3. Resolvers: systemd-resolved usually points at its own stub with
+        if not _omega_guest_eth0_ip(name):
+            app.logger.warning(
+                "Guest %s still has no IPv4 address after DHCP and static "
+                "attempts; check the Incus network %s and its DHCP range",
+                name, (_omega_lxc_net_info(name) or {}).get("bridge", "?"))
+
+        # 4. Resolvers: systemd-resolved usually points at its own stub with
         #    nothing behind it, so hand it an upstream before giving up on it.
         guest(chr(10).join([
             "if getent hosts deb.debian.org >/dev/null 2>&1; then exit 0; fi",
@@ -16760,15 +16782,31 @@ rm -f /tmp/sshx_output.log
 # (127.0.0.53) with nothing listening could not resolve sshx.io or the apt
 # mirrors, which surfaced as "curl: (28) Resolving timed out".
 # Some images boot with only 127.0.0.1 on eth0 because no DHCP client ever
-# ran; nothing resolves then and no download can work.
-if ! ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet '; then
+# ran; nothing resolves then and no download can work. Get a lease first.
+omega_has_ip() {
+  ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet '
+}
+if ! omega_has_ip; then
   ip link set eth0 up 2>/dev/null || true
   for _omega_c in 'dhclient -1 -q eth0' 'busybox udhcpc -i eth0 -n -q -t 5' \
-                   'dhcpcd -1 -t 8 eth0' 'ifup eth0' 'netplan apply'; do
+                   'dhcpcd -1 -t 8 eth0' 'ifup eth0' 'ifup -a'; do
     set -- $_omega_c
     command -v "$1" >/dev/null 2>&1 || continue
     timeout 12 sh -c "$_omega_c" >/dev/null 2>&1 || true
-    ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet ' && break
+    omega_has_ip && break
+  done
+fi
+if ! omega_has_ip; then
+  mkdir -p /etc/systemd/network 2>/dev/null || true
+  { echo '[Match]'; echo Name=eth0; echo; echo '[Network]'; echo DHCP=yes; } \
+    > /etc/systemd/network/10-omega-dhcp.network 2>/dev/null || true
+  systemctl enable --now systemd-networkd >/dev/null 2>&1 || true
+  systemctl restart systemd-networkd >/dev/null 2>&1 || true
+  _omega_i=0
+  while [ "$_omega_i" -lt 8 ]; do
+    omega_has_ip && break
+    sleep 2
+    _omega_i=$((_omega_i + 1))
   done
 fi
 if ! getent hosts sshx.io >/dev/null 2>&1; then
@@ -16792,6 +16830,7 @@ if ! command -v sshx >/dev/null 2>&1; then
       echo "OMEGA_SSHX_NO_NET"
       grep -v '^#' /etc/resolv.conf 2>/dev/null | grep -v '^$' | head -n 3 | sed 's/^/dns: /'
       ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | head -n 2 | sed 's/^/addr: /'
+      ip -o link show 2>/dev/null | head -n 3 | sed 's/^/link: /'
       ip -4 addr show 2>/dev/null | grep -o 'inet [0-9.]*' | head -n 2 | sed 's/^/if: /'
       ip route 2>/dev/null | head -n 2 | sed 's/^/route: /'
       tail -n 2 /tmp/sshx_net.log 2>/dev/null
