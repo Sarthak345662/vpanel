@@ -1,4 +1,5 @@
 """Feature checks for the node-add flow, VPS creation and the Discord command pack."""
+import io
 import os
 import sys
 import tempfile
@@ -437,6 +438,19 @@ finally:
 
 _guest_cmds = [c[-1] for c in _net_calls
                if c[:4] == ["incus", "exec", "omega-net-check", "--"]]
+check("sshx job repairs the guest network before asking for a link",
+      "_lxc_fix_networking(container_id, budget=45)" in ensure_src, "")
+check("guest networking repair is time boxed",
+      "budget=120" in _inspect.getsource(panel._lxc_fix_networking)
+      and "out_of_time()" in _inspect.getsource(panel._lxc_fix_networking), "")
+check("non-kvm wait notices a console that stopped growing",
+      "boot stalled" in wait_src and "console_size" in wait_src, "")
+nonkvm_script = io.open(os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "scripts", "omega-nonkvm.sh"),
+    encoding="utf-8").read()
+check("tcg boot uses one vCPU and an entropy device",
+      "-device virtio-rng-pci" in nonkvm_script
+      and 'smp=1' in nonkvm_script and 'accel" != "kvm' in nonkvm_script, "")
 check("guest networking asks the DHCP clients for a lease",
       any("dhclient" in c for c in _guest_cmds), "")
 check("guest networking tries a networkd DHCP profile",

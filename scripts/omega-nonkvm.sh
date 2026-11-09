@@ -158,13 +158,22 @@ EOF
 }
 
 vm_launch() {
-  local accel="$1" cpu="$2" port
+  local accel="$1" cpu="$2" port smp
   port="$(state_value PORT "")"
+  smp="$(state_value CPU 2)"
+  # Parallel TCG vCPUs can deadlock before the kernel finishes booting, which
+  # showed up as a console that stopped right after the ACPI tables. KVM keeps
+  # the requested count; software emulation gets one vCPU that always boots.
+  if [[ "$accel" != "kvm" && "${smp:-1}" -gt 1 ]]; then
+    smp=1
+    note "TCG boot: using 1 vCPU (requested $(state_value CPU 2))"
+  fi
   local args=(
     -name "$NAME"
     -machine "q35,accel=${accel}"
     -cpu "$cpu"
-    -smp "$(state_value CPU 2)"
+    -smp "$smp"
+    -device virtio-rng-pci
     -m "$(state_value RAM_MB 2048)M"
     -drive "file=${STATE_DIR}/disk.qcow2,if=virtio,format=qcow2,cache=writeback"
     -drive "file=${STATE_DIR}/seed.iso,if=virtio,format=raw,readonly=on"

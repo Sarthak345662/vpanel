@@ -125,7 +125,7 @@ def _omega_lxc_net_info(name):
     return {}
 
 
-def _lxc_fix_networking(name):
+def _lxc_fix_networking(name, budget=120):
     """Give the guest a working link: address, default route and resolvers.
 
     Minimal images came up with only 127.0.0.1 on eth0 - no DHCP client ever
@@ -137,6 +137,10 @@ def _lxc_fix_networking(name):
     try:
         import subprocess as _sp
         note = ""
+        deadline = time.time() + max(15, int(budget or 120))
+
+        def out_of_time():
+            return time.time() > deadline
 
         def guest(cmd, timeout=25):
             try:
@@ -157,7 +161,9 @@ def _lxc_fix_networking(name):
                 "ip -4 -o addr show scope global 2>/dev/null | grep -q 'inet ' && exit 0; "
                 "done; exit 0")
             for _ in range(3):
-                guest(dhcp, timeout=90)
+                if out_of_time():
+                    break
+                guest(dhcp, timeout=min(90, max(20, int(deadline - time.time()))))
                 if _omega_guest_eth0_ip(name):
                     note = "dhcp"
                     break
@@ -174,6 +180,8 @@ def _lxc_fix_networking(name):
                 "systemctl restart systemd-networkd >/dev/null 2>&1 || true",
             ]), timeout=30)
             for _ in range(5):
+                if out_of_time():
+                    break
                 time.sleep(2)
                 if _omega_guest_eth0_ip(name):
                     note = "networkd-dhcp"
@@ -16759,6 +16767,14 @@ def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, rep
         if state != "running":
             lxc_start(container_id)
 
+        if omega_vps_kind(container_id) in ("lxc", "kvm"):
+            # VPS created before the repair existed still boot with only
+            # 127.0.0.1 on eth0, so fix the link before asking for a link.
+            try:
+                _lxc_fix_networking(container_id, budget=45)
+            except Exception:
+                app.logger.debug("Guest networking repair failed for %s",
+                                 container_id, exc_info=True)
         if force:
             lxc_attach(container_id, "pkill -x sshx >/dev/null 2>&1; rm -f /tmp/sshx_output.log", timeout=20)
         # Keep this script simple enough for /bin/sh inside the guest, but never
@@ -18414,6 +18430,14 @@ def _omega_wait_instance_agent(name, timeout=150):
     return False
 
 
+def _omega_nonkvm_console_size(name):
+    """Size of the guest console log; growth means the boot is progressing."""
+    try:
+        return os.path.getsize("/var/lib/omega-panel/nonkvm/%s/console.log" % name)
+    except OSError:
+        return 0
+
+
 def _omega_nonkvm_console_tail(name, limit=400):
     path = "/var/lib/omega-panel/nonkvm/%s/console.log" % name
     try:
@@ -19238,6 +19262,10 @@ def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
     started = time.time()
     last = ""
     next_report = 0.0
+    # A console that stops growing is a stalled boot, not a slow one: report it
+    # straight away instead of burning the whole wait window.
+    console_size = _omega_nonkvm_console_size(name)
+    console_changed = time.time()
     while time.time() < deadline:
         code, output = _omega_ssh_exec(port, password, "true", timeout=15)
         if code == 0:
@@ -19248,6 +19276,21 @@ def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
                 f"QEMU is not running for {name}; start the VPS once from the panel and retry."
             )
         now = time.time()
+        current_size = _omega_nonkvm_console_size(name)
+        if current_size != console_size:
+            console_size = current_size
+            console_changed = now
+        elif now - console_changed > 150 and now - started > 90:
+            tail = _omega_nonkvm_console_tail(name, 240)
+            raise RuntimeError(
+                "The Non-KVM boot stalled: the console has not grown for "
+                "%d seconds after answering nothing on SSH. %s"
+                "Boot log: /var/lib/omega-panel/nonkvm/%s/console.log — stop and "
+                "start the VPS once to apply the current boot settings (1 vCPU "
+                "and a virtio entropy device under software emulation)."
+                % (int(now - console_changed),
+                   ("Console tail: " + tail + " — ") if tail else "", name)
+            )
         if report and now >= next_report:
             next_report = now + 10
             elapsed = int(now - started)
