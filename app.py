@@ -1064,6 +1064,10 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <svg width="18" height="18"><use href="#icon-cpu"/></svg>
             Nodes
         </a>
+        <a href="/admin/integrations#wallpaper" class="sidebar-link">
+            <svg width="18" height="18"><use href="#icon-settings"/></svg>
+            Background &amp; Integrations
+        </a>
     </div>
     <div class="sidebar-section">
         <div class="sidebar-section-label">System</div>
@@ -15035,6 +15039,8 @@ def _omega_columns():
             ("bot_banner_url", "TEXT DEFAULT ''"), ("bot_logo_url", "TEXT DEFAULT ''"),
             ("bot_banner_path", "TEXT DEFAULT ''"), ("bot_logo_path", "TEXT DEFAULT ''"),
             ("panel_public_url", "TEXT DEFAULT ''"),
+            ("bg_image_url", "TEXT DEFAULT ''"), ("bg_image_path", "TEXT DEFAULT ''"),
+            ("bg_dim", "INTEGER DEFAULT 45"), ("bg_blur", "INTEGER DEFAULT 14"),
             ("health_interval_seconds", "INTEGER DEFAULT 86400"),
             ("health_alert_discord_id", "TEXT DEFAULT ''"),
         ],
@@ -15186,6 +15192,47 @@ def omega_apply_global_font(response):
                 response.set_data(body.replace("</head>", "<style>" + css + "</style></head>", 1))
             except Exception:
                 pass
+    return response
+
+
+def _omega_wallpaper_css(s):
+    url = (s.get("bg_image_path") or s.get("bg_image_url") or "").strip()
+    if not (url.startswith("https://") or url.startswith("/static/uploads/")):
+        return ""
+    url = re.sub(r"[^A-Za-z0-9\-._~:/?#\[\]@!$&*+,;=%]", "", url)
+    try:
+        dim = max(0, min(90, int(s.get("bg_dim") if s.get("bg_dim") is not None else 45)))
+        blur = max(0, min(30, int(s.get("bg_blur") if s.get("bg_blur") is not None else 14)))
+    except (TypeError, ValueError):
+        dim, blur = 45, 14
+    alpha = dim / 100.0
+    glass = "backdrop-filter:blur(%dpx) saturate(1.15);-webkit-backdrop-filter:blur(%dpx) saturate(1.15);" % (blur, blur)
+    return (
+        "html{background:#05030a !important}"
+        "body{background:linear-gradient(rgba(0,0,0,%(a).2f),rgba(0,0,0,%(a).2f)),url(\"%(u)s\") center/cover fixed no-repeat !important}"
+        ".hero-bg,.hero-grid{background:transparent !important}"
+        ".app-layout,.main-content{background:transparent !important}"
+        ".sidebar{background:color-mix(in srgb,var(--bg-elevated) 38%%,transparent) !important;" + glass + "}"
+        ".sidebar-logo,.sidebar-footer{border-color:rgba(255,255,255,.08) !important}"
+        ".sidebar-link{background:color-mix(in srgb,var(--bg-card) 22%%,transparent) !important;margin:2px 10px;border-radius:9px;padding-left:12px !important;padding-right:12px !important}"
+        ".sidebar-link:hover{background:color-mix(in srgb,var(--bg-hover) 70%%,transparent) !important}"
+        ".sidebar-link.active{background:color-mix(in srgb,var(--accent) 80%%,transparent) !important;border-radius:9px !important}"
+        ".topbar{background:color-mix(in srgb,var(--bg-elevated) 40%%,transparent) !important;" + glass + "}"
+        ".card,.vps-card,.stat-card,.auth-card,.modal,.panel,.metric,[class$='-card']{background:color-mix(in srgb,var(--bg-card) 52%%,transparent) !important;" + glass + "}"
+    ) % {"a": alpha, "u": url}
+
+
+@app.after_request
+def omega_apply_wallpaper(response):
+    try:
+        if response.mimetype == "text/html" and not response.direct_passthrough and response.status_code < 400:
+            css = _omega_wallpaper_css(_omega_settings_dict())
+            if css:
+                body = response.get_data(as_text=True)
+                if "</head>" in body:
+                    response.set_data(body.replace("</head>", "<style id=\"omega-wallpaper\">" + css + "</style></head>", 1))
+    except Exception:
+        app.logger.debug("wallpaper injection failed", exc_info=True)
     return response
 
 
@@ -15416,6 +15463,31 @@ def omega_integrations_settings():
                 values[column] = "/static/uploads/" + filename
                 # The uploaded local asset takes precedence over any previously saved remote URL.
                 values["bot_banner_url" if column == "bot_banner_path" else "bot_logo_url"] = ""
+        # Panel wallpaper (shown behind the whole panel, sidebar and cards turn glassy).
+        bg_url = (request.form.get("bg_image_url") or "").strip()
+        values["bg_image_url"] = bg_url if bg_url.startswith("https://") else ""
+        values["bg_image_path"] = s["bg_image_path"] if "bg_image_path" in s.keys() else ""
+        try:
+            values["bg_dim"] = max(0, min(90, int(request.form.get("bg_dim", 45))))
+            values["bg_blur"] = max(0, min(30, int(request.form.get("bg_blur", 14))))
+        except ValueError:
+            values["bg_dim"], values["bg_blur"] = 45, 14
+        bg_file = request.files.get("bg_image_file")
+        if bg_file and bg_file.filename:
+            raw = bg_file.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                flash("Wallpaper must be 8 MB or smaller.", "error"); return redirect(url_for("omega_integrations_settings"))
+            sigs = {b"\x89PNG\r\n\x1a\n": ".png", b"\xff\xd8\xff": ".jpg", b"GIF87a": ".gif", b"GIF89a": ".gif", b"RIFF": ".webp"}
+            bg_ext = next((v for sig, v in sigs.items() if raw.startswith(sig)), None)
+            if not bg_ext or (bg_ext == ".webp" and raw[8:12] != b"WEBP"):
+                flash("Upload a valid PNG, JPG, GIF or WebP wallpaper.", "error"); return redirect(url_for("omega_integrations_settings"))
+            bg_dir = os.path.join(app.root_path, "static", "uploads"); os.makedirs(bg_dir, exist_ok=True)
+            bg_name = f"omega_wallpaper_{uuid.uuid4().hex}{bg_ext}"
+            with open(os.path.join(bg_dir, bg_name), "wb") as out: out.write(raw)
+            values["bg_image_path"] = "/static/uploads/" + bg_name
+            values["bg_image_url"] = ""
+        if request.form.get("bg_remove"):
+            values["bg_image_url"] = ""; values["bg_image_path"] = ""
         columns = list(values.keys()) + ["smtp_port", "smtp_tls", "smtp_ssl", "health_interval_seconds"]
         update_values = [values[k] for k in values] + [values["smtp_port"], values["smtp_tls"], values["smtp_ssl"], values["health_interval_seconds"]]
         conn = get_db(); conn.execute("UPDATE settings SET " + ",".join(f"{c}=?" for c in columns) + " WHERE id=?", update_values + [s["id"]]); conn.commit(); conn.close()
@@ -15432,6 +15504,9 @@ def omega_integrations_settings():
 OMEGA_INTEGRATIONS_HTML = r'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vizion integrations</title>
 <style>body{margin:0;background:#0b1220;color:#e7edf5;font:14px system-ui}main{max-width:1000px;margin:32px auto;padding:20px}.card{background:#121d2d;border:1px solid #26364a;border-radius:14px;padding:20px;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}label{display:block;margin:10px 0 5px;color:#b7c5d6}input,textarea{box-sizing:border-box;width:100%;padding:10px;background:#0b1422;border:1px solid #34465d;border-radius:8px;color:#fff}textarea{min-height:130px}button{padding:11px 18px;border:0;border-radius:8px;background:#46b5e8;color:#07111b;font-weight:700;cursor:pointer}.hint{color:#9fb0c4;font-size:12px}.check{display:flex;gap:8px;align-items:center}.check input{width:auto}</style></head><body><main><h1>Vizion Panel · Integrations & Monitoring</h1><p><a href="/admin/env-editor" style="color:#6ccfff">Open Discord .env editor →</a></p><p class="hint">All values below are saved in the panel SQLite database. Leave secret fields blank to keep the existing secret.</p>
 <form method="post" enctype="multipart/form-data">
+<section class="card" id="wallpaper"><h2>Panel background wallpaper</h2><p class="hint">The image is shown behind every page (dashboard, admin, login). The sidebar, buttons and cards become glass so the wallpaper shows through. Leave empty for the normal look.</p>
+<div class="grid"><div><label>Wallpaper URL (HTTPS)</label><input name="bg_image_url" value="{{settings.bg_image_url}}" placeholder="https://example.com/wallpaper.jpg"><label>Or upload wallpaper (PNG/JPG/WebP/GIF, max 8 MB)</label><input type="file" name="bg_image_file" accept="image/png,image/jpeg,image/gif,image/webp">{% if settings.bg_image_path %}<p class="hint">Current upload: {{settings.bg_image_path}}</p>{% endif %}<label class="check"><input type="checkbox" name="bg_remove"> Remove wallpaper</label></div>
+<div><label>Darkness over the image: <b id="bgdimv">{{settings.bg_dim if settings.bg_dim is not none else 45}}</b>%</label><input type="range" min="0" max="90" name="bg_dim" value="{{settings.bg_dim if settings.bg_dim is not none else 45}}" oninput="document.getElementById('bgdimv').textContent=this.value"><label>Glass blur behind sidebar and cards: <b id="bgblurv">{{settings.bg_blur if settings.bg_blur is not none else 14}}</b>px</label><input type="range" min="0" max="30" name="bg_blur" value="{{settings.bg_blur if settings.bg_blur is not none else 14}}" oninput="document.getElementById('bgblurv').textContent=this.value"></div></div></section>
 <section class="card"><h2>SMTP & HTML email template</h2><div class="grid">
 <div><label>SMTP Host</label><input name="smtp_host" value="{{settings.smtp_host}}"><label>SMTP Port</label><input type="number" name="smtp_port" value="{{settings.smtp_port or 587}}"></div>
 <div><label>SMTP Username</label><input name="smtp_username" value="{{settings.smtp_username}}"><label>SMTP Password (blank = unchanged)</label><input type="password" name="smtp_password" autocomplete="new-password"><label>From address</label><input name="smtp_from" value="{{settings.smtp_from}}"></div></div>
