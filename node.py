@@ -1451,6 +1451,32 @@ def delete_image(image_tag):
 # ---------------------------------------------------------------------------
 
 terminal_sessions = {}
+_TERMINAL_IDLE_SECONDS = 180
+
+
+def _terminal_reaper():
+    """Kill shells whose browser tab went away (no stream attached for a while)."""
+    while True:
+        time.sleep(30)
+        now = time.time()
+        for sid, sess in list(terminal_sessions.items()):
+            detached = sess.get('detached_at')
+            if detached and now - detached > _TERMINAL_IDLE_SECONDS:
+                terminal_sessions.pop(sid, None)
+                try:
+                    sess['proc'].terminate()
+                except Exception:
+                    pass
+
+
+_terminal_reaper_started = False
+
+
+def _terminal_start_reaper():
+    global _terminal_reaper_started
+    if not _terminal_reaper_started:
+        _terminal_reaper_started = True
+        threading.Thread(target=_terminal_reaper, name='terminal-reaper', daemon=True).start()
 
 
 @app.route('/api/container/<container_id>/terminal/session', methods=['POST'])
@@ -1481,7 +1507,10 @@ def node_terminal_create_session(container_id):
         'master_fd': master_fd,
         'proc': proc,
         'container_id': container_id,
+        'gen': 0,
+        'detached_at': time.time(),
     }
+    _terminal_start_reaper()
 
     def _cleanup():
         proc.wait()
@@ -1538,36 +1567,51 @@ def node_terminal_stream(container_id):
     if not sess:
         return jsonify({'error': 'session not found'}), 404
 
+    sess['gen'] = sess.get('gen', 0) + 1
+    my_gen = sess['gen']
+    sess['detached_at'] = None
+
     def generate():
         mfd = sess['master_fd']
         proc = sess['proc']
         last_keepalive = time.time()
-        while True:
-            timeout = max(0, 15 - (time.time() - last_keepalive))
-            r, _, _ = select.select([mfd], [], [], timeout)
-            if r:
+        # Padding comment makes proxies flush the response headers right away.
+        yield ': ' + (' ' * 2048) + '\n\n'
+        try:
+            while True:
+                if sess.get('gen') != my_gen:
+                    return
+                timeout = max(0, min(1, 15 - (time.time() - last_keepalive)))
                 try:
-                    data = os.read(mfd, 4096)
-                    if not data:
-                        break
-                    yield 'data: ' + base64.b64encode(data).decode() + '\n\n'
-                except OSError:
+                    r, _, _ = select.select([mfd], [], [], timeout)
+                except (OSError, ValueError):
                     break
-            if proc.poll() is not None:
-                try:
-                    data = os.read(mfd, 4096)
-                    if data:
+                if r:
+                    try:
+                        data = os.read(mfd, 4096)
+                        if not data:
+                            break
                         yield 'data: ' + base64.b64encode(data).decode() + '\n\n'
-                except OSError:
-                    pass
-                break
-            if time.time() - last_keepalive >= 15:
-                yield ': keepalive\n\n'
-                last_keepalive = time.time()
-        yield 'data: __TERMINAL_CLOSED__\n\n'
+                    except OSError:
+                        break
+                if proc.poll() is not None:
+                    try:
+                        data = os.read(mfd, 4096)
+                        if data:
+                            yield 'data: ' + base64.b64encode(data).decode() + '\n\n'
+                    except OSError:
+                        pass
+                    break
+                if time.time() - last_keepalive >= 15:
+                    yield ': keepalive\n\n'
+                    last_keepalive = time.time()
+            yield 'data: __TERMINAL_CLOSED__\n\n'
+        finally:
+            if sess.get('gen') == my_gen:
+                sess['detached_at'] = time.time()
 
     resp = Response(generate(), mimetype='text/event-stream')
-    resp.headers['Cache-Control'] = 'no-cache'
+    resp.headers['Cache-Control'] = 'no-cache, no-transform'
     resp.headers['X-Accel-Buffering'] = 'no'
     resp.headers['Connection'] = 'keep-alive'
     return resp
