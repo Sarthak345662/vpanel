@@ -16923,6 +16923,75 @@ def _omega_nonkvm_bridge_stop(name):
     time.sleep(0.5)
 
 
+def _omega_nonkvm_write_fix_script(name):
+    """Write (and return the path of) the self-contained root-login repair script."""
+    state_dir = omega_nonkvm_state_dir(name)
+    os.makedirs(state_dir, exist_ok=True)
+    # Self-contained repair for guests whose first boot config was rejected by
+    # cloud-init (root password never set -> "Permission denied (publickey)").
+    # It does not depend on the installed omega-nonkvm.sh version.
+    fix_path = os.path.join(state_dir, "sshx-fix.sh")
+    fix_text = r"""#!/bin/bash
+D=__DIR__
+NAME=__NAME__
+NONKVM=__NONKVM__
+PW=$(grep '^SSH_PASSWORD=' "$D/state.env" | tail -n1 | cut -d= -f2-)
+[ -n "$PW" ] || { echo "No SSH password recorded for $NAME"; exit 1; }
+command -v cloud-localds >/dev/null 2>&1 || { echo "cloud-localds is missing (apt-get install cloud-image-utils)"; exit 1; }
+cat > "$D/user-data" <<EOF
+#cloud-config
+hostname: ${NAME}
+disable_root: false
+ssh_pwauth: true
+users:
+  - name: root
+    lock_passwd: false
+    plain_text_passwd: "${PW}"
+chpasswd:
+  expire: false
+  users:
+    - {name: root, password: "${PW}", type: text}
+write_files:
+  - path: /etc/ssh/sshd_config.d/00-vizion.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication yes
+      PermitRootLogin yes
+      KbdInteractiveAuthentication yes
+package_update: false
+package_upgrade: false
+runcmd:
+  - |
+    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+    sed -i 's/^PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+EOF
+cat > "$D/meta-data" <<EOF
+instance-id: iid-${NAME}-$(date +%s)
+local-hostname: ${NAME}
+EOF
+cloud-localds "$D/seed.iso" "$D/user-data" "$D/meta-data" || exit 1
+pid=$(cat "$D/qemu.pid" 2>/dev/null)
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  kill "$pid" 2>/dev/null
+  for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -9 "$pid" 2>/dev/null
+  rm -f "$D/qemu.pid"
+fi
+sed -i '/^SSHFIX=/d' "$D/state.env" 2>/dev/null
+echo "SSHFIX=3" >> "$D/state.env"
+bash "$NONKVM" start --name "$NAME"
+"""
+    fix_text = (fix_text.replace("__DIR__", shlex.quote(state_dir))
+                .replace("__NAME__", shlex.quote(str(name)))
+                .replace("__NONKVM__", shlex.quote(os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "scripts", "omega-nonkvm.sh"))))
+    with open(fix_path, "w", encoding="utf-8") as handle:
+        handle.write(fix_text)
+    os.chmod(fix_path, 0o700)
+    return fix_path
+
+
 def _omega_nonkvm_wait_root_ready(name, port, password, fix_path, timeout=900, report=None):
     """Block until root can log in to the Non-KVM guest over SSH.
 
@@ -17043,68 +17112,7 @@ done
         handle.write(shell_text)
     os.chmod(shell_path, 0o700)
 
-    # Self-contained repair for guests whose first boot config was rejected by
-    # cloud-init (root password never set -> "Permission denied (publickey)").
-    # It does not depend on the installed omega-nonkvm.sh version.
-    fix_path = os.path.join(state_dir, "sshx-fix.sh")
-    fix_text = r"""#!/bin/bash
-D=__DIR__
-NAME=__NAME__
-NONKVM=__NONKVM__
-PW=$(grep '^SSH_PASSWORD=' "$D/state.env" | tail -n1 | cut -d= -f2-)
-[ -n "$PW" ] || { echo "No SSH password recorded for $NAME"; exit 1; }
-command -v cloud-localds >/dev/null 2>&1 || { echo "cloud-localds is missing (apt-get install cloud-image-utils)"; exit 1; }
-cat > "$D/user-data" <<EOF
-#cloud-config
-hostname: ${NAME}
-disable_root: false
-ssh_pwauth: true
-users:
-  - name: root
-    lock_passwd: false
-    plain_text_passwd: "${PW}"
-chpasswd:
-  expire: false
-  users:
-    - {name: root, password: "${PW}", type: text}
-write_files:
-  - path: /etc/ssh/sshd_config.d/00-vizion.conf
-    permissions: "0644"
-    content: |
-      PasswordAuthentication yes
-      PermitRootLogin yes
-      KbdInteractiveAuthentication yes
-package_update: false
-package_upgrade: false
-runcmd:
-  - |
-    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-    sed -i 's/^PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null
-    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
-EOF
-cat > "$D/meta-data" <<EOF
-instance-id: iid-${NAME}-$(date +%s)
-local-hostname: ${NAME}
-EOF
-cloud-localds "$D/seed.iso" "$D/user-data" "$D/meta-data" || exit 1
-pid=$(cat "$D/qemu.pid" 2>/dev/null)
-if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-  kill "$pid" 2>/dev/null
-  for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
-  kill -9 "$pid" 2>/dev/null
-  rm -f "$D/qemu.pid"
-fi
-sed -i '/^SSHFIX=/d' "$D/state.env" 2>/dev/null
-echo "SSHFIX=3" >> "$D/state.env"
-bash "$NONKVM" start --name "$NAME"
-"""
-    fix_text = (fix_text.replace("__DIR__", shlex.quote(state_dir))
-                .replace("__NAME__", shlex.quote(str(name)))
-                .replace("__NONKVM__", shlex.quote(os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), "scripts", "omega-nonkvm.sh"))))
-    with open(fix_path, "w", encoding="utf-8") as handle:
-        handle.write(fix_text)
-    os.chmod(fix_path, 0o700)
+    fix_path = _omega_nonkvm_write_fix_script(name)
 
     # Wait for the guest first, so the SSHX link opens directly in a root shell.
     try:
@@ -18846,11 +18854,42 @@ def _omega_nonkvm_terminal(name):
         "DISPLAY": env.get("DISPLAY") or ":0",
         "TERM": "xterm-256color",
     })
-    argv = [ssh, "-tt", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
-            "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=15",
-            "-o", "ServerAliveInterval=30", "-p", str(port), "root@127.0.0.1",
-            "TERM=xterm-256color exec /bin/bash -l"]
+    try:
+        fix_path = _omega_nonkvm_write_fix_script(name)
+    except Exception:
+        app.logger.exception("Could not write the Non-KVM repair script")
+        fix_path = ""
+    state_dir = omega_nonkvm_state_dir(name)
+    env.update({
+        "OMEGA_SSH": ssh,
+        "OMEGA_PORT": str(int(port)),
+        "OMEGA_NAME": str(name),
+        "OMEGA_FIX": fix_path,
+        "OMEGA_STATE": state_dir,
+        "OMEGA_NONKVM": os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "scripts", "omega-nonkvm.sh"),
+    })
+    script = r"""
+OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no
+      -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o ConnectTimeout=60
+      -o LogLevel=ERROR -o ServerAliveInterval=30 -p "$OMEGA_PORT")
+printf 'Connecting to the VPS...'
+fixtried=0; starttried=0
+until err=$("$OMEGA_SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null 2>&1); do
+  pid=$(cat "$OMEGA_STATE/qemu.pid" 2>/dev/null)
+  if [ "$starttried" = 0 ] && { [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; }; then
+    starttried=1
+    bash "$OMEGA_NONKVM" start --name "$OMEGA_NAME" >/dev/null 2>&1
+  elif [ "$fixtried" = 0 ] && [ -n "$OMEGA_FIX" ] && printf '%s' "$err" | grep -q 'Permission denied'; then
+    fixtried=1
+    bash "$OMEGA_FIX" >/dev/null 2>&1
+  fi
+  sleep 3
+done
+clear
+exec "$OMEGA_SSH" -tt "${OPTS[@]}" root@127.0.0.1 'TERM=xterm-256color exec /bin/bash -l'
+"""
+    argv = ["bash", "-c", script, "omega-terminal"]
     return argv, env, askpass
 
 
