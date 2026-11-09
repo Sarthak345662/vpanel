@@ -345,6 +345,91 @@ install_host_sshx() {
 }
 
 # ---------------------------------------------------------------------------
+# Non-KVM VPS: requirements + self-heal. Runs on every install / update / fix
+# so a broken boot config (root login refused over SSHX) can never come back.
+# ---------------------------------------------------------------------------
+ensure_nonkvm_deps() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local need=0 c
+    for c in qemu-system-x86_64 qemu-img cloud-localds ssh curl; do
+        command -v "$c" >/dev/null 2>&1 || need=1
+    done
+    [[ "$need" -eq 1 ]] || return 0
+    say "Installing Non-KVM requirements (qemu, cloud-image-utils, ssh) ..."
+    if command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils openssh-client curl >/dev/null 2>&1 \
+            || { apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils openssh-client curl >/dev/null 2>&1; } \
+            || warn "could not install some Non-KVM packages"
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf -y install qemu-kvm qemu-img openssh-clients curl >/dev/null 2>&1 || warn "could not install qemu/ssh packages"
+        command -v cloud-localds >/dev/null 2>&1 || dnf -y install cloud-utils >/dev/null 2>&1 \
+            || warn "cloud-localds missing (install cloud-utils / cloud-image-utils manually)"
+    fi
+    command -v cloud-localds >/dev/null 2>&1 || warn "cloud-localds still missing - Non-KVM VPS cannot set the root password"
+    return 0
+}
+
+# A good omega-nonkvm.sh has the fixssh action and NOT the old YAML-breaking
+# "\{0,1\}" escape that made cloud-init reject the whole config.
+nonkvm_script_ok() {
+    [[ -s "$1" ]] && grep -q 'fixssh' "$1" && ! grep -qF '{0,1}' "$1" && bash -n "$1" 2>/dev/null
+}
+
+heal_nonkvm_script() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local dst="$INSTALL_DIR/scripts/omega-nonkvm.sh" src tmp
+    [[ -d "$INSTALL_DIR/scripts" ]] || return 0
+    if nonkvm_script_ok "$dst"; then return 0; fi
+    warn "omega-nonkvm.sh is outdated/broken - replacing it"
+    for src in "$ROOT_DIR/scripts/omega-nonkvm.sh" "$ROOT_DIR/omega-nonkvm.sh"; do
+        if [[ "$src" != "$dst" ]] && nonkvm_script_ok "$src"; then
+            install -m 0755 "$src" "$dst"
+            id omega-panel >/dev/null 2>&1 && chown omega-panel:omega-panel "$dst" 2>/dev/null || true
+            ok "omega-nonkvm.sh repaired"
+            return 0
+        fi
+    done
+    if command -v curl >/dev/null 2>&1; then
+        tmp="$(mktemp)"
+        if curl -fsSL "${RAW_BASE}/scripts/omega-nonkvm.sh" -o "$tmp" && nonkvm_script_ok "$tmp"; then
+            install -m 0755 "$tmp" "$dst"
+            id omega-panel >/dev/null 2>&1 && chown omega-panel:omega-panel "$dst" 2>/dev/null || true
+            ok "omega-nonkvm.sh repaired (downloaded)"
+            rm -f "$tmp"
+            return 0
+        fi
+        rm -f "$tmp"
+    fi
+    warn "could not repair omega-nonkvm.sh automatically; copy scripts/omega-nonkvm.sh to $dst"
+    return 0
+}
+
+# Existing Non-KVM VPS created with the old broken boot config: running ones
+# are rebuilt + rebooted once (fixssh); stopped ones rebuild on their next start.
+repair_nonkvm_vms() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local root="${OMEGA_NONKVM_DIR:-/var/lib/omega-panel/nonkvm}" script="$INSTALL_DIR/scripts/omega-nonkvm.sh" d n pid
+    [[ -d "$root" && -f "$script" ]] || return 0
+    command -v cloud-localds >/dev/null 2>&1 || return 0
+    nonkvm_script_ok "$script" || return 0
+    for d in "$root"/*/; do
+        [[ -f "${d}state.env" ]] || continue
+        grep -q '^SSHFIX=3' "${d}state.env" && continue
+        n="$(basename "$d")"
+        pid="$(cat "${d}qemu.pid" 2>/dev/null || true)"
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            say "Repairing running Non-KVM VPS ${n} (one reboot) ..."
+            if id omega-panel >/dev/null 2>&1; then
+                runuser -u omega-panel -- bash "$script" fixssh --name "$n" >/dev/null 2>&1 && ok "${n} repaired" || warn "could not repair ${n}"
+            else
+                bash "$script" fixssh --name "$n" >/dev/null 2>&1 && ok "${n} repaired" || warn "could not repair ${n}"
+            fi
+        fi
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # One function that applies every host-side fix. Runs on install, update,
 # fix and node install, so nothing has to be pasted by hand afterwards.
 # ---------------------------------------------------------------------------
@@ -353,6 +438,8 @@ omega_post_setup() {
     say "Applying host fixes (network, VPS keep-alive, auto-start) ..."
     keep_vms_alive
     fix_host_network
+    ensure_nonkvm_deps
+    heal_nonkvm_script
     setup_vm_autostart
     install_host_sshx
     # SSH client is needed by the panel to talk to Non-KVM guests.
@@ -365,6 +452,7 @@ omega_post_setup() {
         chown -R omega-panel:omega-panel /var/lib/omega-panel/nonkvm /var/lib/omega-panel/images 2>/dev/null || true
         [[ -e /dev/kvm ]] && usermod -aG kvm omega-panel 2>/dev/null || true
     fi
+    repair_nonkvm_vms
     ok "host fixes applied"
     return 0
 }
