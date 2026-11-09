@@ -16837,6 +16837,203 @@ def fix_vps_ssh(vps_id):
     return redirect(url_for("vps_detail", vps_id=vps_id))
 
 
+# --- Non-KVM SSHX bridge ----------------------------------------------------
+# A software-emulated (no /dev/kvm) guest needs 10+ minutes before sshd answers,
+# so installing sshx INSIDE the guest made "Creating SSHX access" sit on the
+# SSH wait until it failed. The bridge runs sshx on the HOST instead: the link
+# exists in seconds and the terminal waits for the guest, shows boot progress,
+# then logs in automatically (and re-connects after a guest reboot).
+
+def _omega_host_sshx_bin():
+    """Path of an sshx binary on the panel host; downloads one when missing."""
+    import tarfile
+    import urllib.request
+    search = os.pathsep.join(["/usr/local/bin", "/usr/bin", "/var/lib/omega-panel/bin",
+                              os.path.expanduser("~/.local/bin"), os.environ.get("PATH", "")])
+    found = shutil.which("sshx", path=search)
+    if found:
+        return found
+    arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(
+        os.uname().machine.lower(), "")
+    bindir = "/var/lib/omega-panel/bin"
+    try:
+        os.makedirs(bindir, exist_ok=True)
+    except OSError:
+        bindir = tempfile.gettempdir()
+    target = os.path.join(bindir, "sshx")
+    if arch:
+        url = "https://s3.amazonaws.com/sshx/sshx-%s-unknown-linux-musl.tar.gz" % arch
+        try:
+            archive = os.path.join(bindir, "sshx.tar.gz")
+            with urllib.request.urlopen(url, timeout=60) as resp, open(archive, "wb") as out:
+                shutil.copyfileobj(resp, out)
+            with tarfile.open(archive) as tar:
+                for member in tar.getmembers():
+                    if member.isfile() and os.path.basename(member.name) == "sshx":
+                        with tar.extractfile(member) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        os.chmod(target, 0o755)
+                        break
+            os.unlink(archive)
+            if os.path.isfile(target):
+                return target
+        except Exception:
+            app.logger.warning("Could not download sshx for the host", exc_info=True)
+    try:
+        env = dict(os.environ)
+        env["HOME"] = env.get("HOME") or "/var/lib/omega-panel"
+        subprocess.run(["sh", "-c", "curl -fsSL https://sshx.io/get | sh"], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    except Exception:
+        app.logger.warning("sshx get script failed on the host", exc_info=True)
+    return shutil.which("sshx", path=search) or ""
+
+
+def _omega_nonkvm_bridge_pid(name):
+    try:
+        with open(os.path.join(omega_nonkvm_state_dir(name), "sshx-bridge.pid"), encoding="utf-8") as handle:
+            return int(handle.read().strip() or 0)
+    except Exception:
+        return 0
+
+
+def _omega_nonkvm_bridge_alive(name):
+    pid = _omega_nonkvm_bridge_pid(name)
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _omega_nonkvm_bridge_stop(name):
+    import signal
+    pid = _omega_nonkvm_bridge_pid(name)
+    if pid <= 0:
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    time.sleep(0.5)
+
+
+def _omega_nonkvm_host_sshx(name, report=None, timeout=60):
+    """Start sshx on the host for a Non-KVM VPS and return its share link."""
+    def _step(percent, message):
+        if report is None:
+            return
+        try:
+            report(int(percent), str(message))
+        except Exception:
+            pass
+
+    password, port = _omega_nonkvm_credentials(name)
+    if not port:
+        raise RuntimeError("No SSH port is recorded for this Non-KVM VPS; start it once from the panel.")
+    ssh = shutil.which("ssh")
+    if not ssh:
+        raise RuntimeError("The ssh client is not installed on the panel host (apt-get install openssh-client).")
+    _step(45, "Preparing sshx on the panel host\u2026")
+    sshx = _omega_host_sshx_bin()
+    if not sshx:
+        raise RuntimeError(
+            "sshx is not installed on the panel host and could not be downloaded. "
+            "Run: curl -fsSL https://sshx.io/get | sudo sh   (or re-run the panel update command).")
+
+    state_dir = omega_nonkvm_state_dir(name)
+    os.makedirs(state_dir, exist_ok=True)
+    _omega_nonkvm_bridge_stop(name)
+
+    askpass = os.path.join(state_dir, "sshx-askpass.sh")
+    with open(askpass, "w", encoding="utf-8") as handle:
+        handle.write('#!/bin/sh\nprintf "%%s\\n" %s\n' % shlex.quote(str(password or "")))
+    os.chmod(askpass, 0o700)
+
+    shell_path = os.path.join(state_dir, "sshx-shell.sh")
+    shell_text = r"""#!/bin/bash
+# Generated by Vizion Panel - terminal bridge into a Non-KVM guest.
+export SSH_ASKPASS=__ASKPASS__
+export SSH_ASKPASS_REQUIRE=force
+export DISPLAY="${DISPLAY:-:0}"
+export TERM=xterm-256color
+CON=__CONSOLE__
+OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no
+      -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o ConnectTimeout=10
+      -o ServerAliveInterval=30 -p __PORT__)
+SSH=__SSH__
+started=$(date +%s)
+printf '\033[1;36mVizion Panel - Non-KVM VPS terminal\033[0m\n'
+while true; do
+  until "$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null >/dev/null 2>&1; do
+    el=$(( $(date +%s) - started ))
+    last=$(tail -n 1 "$CON" 2>/dev/null | tr -d '\r\033' | cut -c1-50)
+    printf '\r\033[KWaiting for the guest to boot (no KVM = slow) %dm%02ds  %s' $((el/60)) $((el%60)) "$last"
+    sleep 5
+  done
+  printf '\n\033[1;32mGuest is up. Connecting...\033[0m\n'
+  "$SSH" -tt "${OPTS[@]}" root@127.0.0.1 'TERM=xterm-256color exec /bin/bash -l'
+  printf '\n\033[33mConnection closed. Reconnecting in 3s...\033[0m\n'
+  started=$(date +%s)
+  sleep 3
+done
+"""
+    shell_text = (shell_text.replace("__ASKPASS__", shlex.quote(askpass))
+                  .replace("__CONSOLE__", shlex.quote(os.path.join(state_dir, "console.log")))
+                  .replace("__PORT__", str(int(port)))
+                  .replace("__SSH__", shlex.quote(ssh)))
+    with open(shell_path, "w", encoding="utf-8") as handle:
+        handle.write(shell_text)
+    os.chmod(shell_path, 0o700)
+
+    log_path = os.path.join(state_dir, "sshx-bridge.log")
+    open(log_path, "w").close()
+    inner = "%s --shell %s" % (shlex.quote(sshx), shlex.quote(shell_path))
+    script_bin = shutil.which("script")
+    if script_bin:
+        # sshx wants a pty; a never-ending stdin keeps `script` alive after the
+        # panel restarts (the bridge is its own process group).
+        runner = "sleep 2147483647 | %s -qfc %s %s" % (
+            shlex.quote(script_bin), shlex.quote(inner), shlex.quote(log_path))
+    else:
+        runner = "sleep 2147483647 | %s >%s 2>&1" % (inner, shlex.quote(log_path))
+    env = dict(os.environ)
+    env["HOME"] = env.get("HOME") or "/var/lib/omega-panel"
+    env["TERM"] = "xterm-256color"
+    _step(60, "Starting the SSHX terminal bridge\u2026")
+    proc = subprocess.Popen(["/bin/sh", "-c", runner], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env=env, start_new_session=True)
+    with open(os.path.join(state_dir, "sshx-bridge.pid"), "w", encoding="utf-8") as handle:
+        handle.write(str(proc.pid))
+
+    url_re = re.compile(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+")
+    deadline = time.time() + max(20, int(timeout))
+    text = ""
+    while time.time() < deadline:
+        try:
+            with open(log_path, "rb") as handle:
+                text = handle.read().decode("utf-8", errors="ignore")
+        except OSError:
+            text = ""
+        found = url_re.search(text)
+        if found:
+            return found.group(0)
+        if proc.poll() is not None and not _omega_nonkvm_bridge_alive(name):
+            break
+        time.sleep(1)
+    tail = " ".join(text.split())[-300:]
+    _omega_nonkvm_bridge_stop(name)
+    raise RuntimeError("sshx did not print a share link on the host (check the panel host's internet): %s"
+                       % (tail or "no output"))
+
+
+
 def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, report=None):
     """Return a working SSHX URL for a VPS, creating and caching one if needed.
 
@@ -16862,7 +17059,12 @@ def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, rep
 
     cached = str(vps["ssh_command"] or "").strip()
     if not force and cached and "sshx.io/" in cached:
-        return cached
+        try:
+            _kind = omega_vps_kind(str(vps["container_id"] or ""))
+        except Exception:
+            _kind = ""
+        if _kind != "nonkvm" or _omega_nonkvm_bridge_alive(str(vps["container_id"])):
+            return cached
 
     current, node = get_node_for_vps(int(vps_id))
     if not current or not node:
@@ -16876,6 +17078,20 @@ def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, rep
         state = str(lxc_status(container_id)).lower()
         if state != "running":
             lxc_start(container_id)
+
+        if (omega_vps_kind(container_id) == "nonkvm"
+                and os.environ.get("OMEGA_NONKVM_SSHX_MODE", "host").strip().lower() != "guest"):
+            # Do not wait for the slow guest: run sshx on the host and let the
+            # terminal itself wait for the guest's SSH (see the bridge above).
+            ssh_command = _omega_nonkvm_host_sshx(container_id, report=_step)
+            _step(90, "Saving the sshx.io share link\u2026")
+            conn = get_db()
+            try:
+                conn.execute("UPDATE vps SET ssh_command = ? WHERE id = ?", (ssh_command, int(vps_id)))
+                conn.commit()
+            finally:
+                conn.close()
+            return ssh_command
 
         if omega_vps_kind(container_id) in ("lxc", "kvm"):
             # VPS created before the repair existed still boot with only
@@ -18889,7 +19105,7 @@ def _omega_start_sshx_job(vps_row, owner_id, base_url):
                                            status, progress, message)
                VALUES (?,?,?,?,?,?,?)""",
             (owner_id, vps_row["user_id"], vps_row["id"], vps_type, "running", 10,
-             "Waiting for the Non-KVM guest to boot\u2026" if vps_type == "nonkvm"
+             "Starting the SSHX terminal bridge\u2026" if vps_type == "nonkvm"
              else "Preparing SSHX inside the VPS\u2026"),
         )
         conn.commit()
