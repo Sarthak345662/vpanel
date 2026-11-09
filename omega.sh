@@ -165,6 +165,94 @@ need_systemd() {
 }
 
 # ---------------------------------------------------------------------------
+# Host network fix: lets VPS/guests get an IP, DNS and internet (needed by SSHX).
+# Runs automatically on install, update, fix and node install, and again at
+# every boot through omega-netfix.service.
+# ---------------------------------------------------------------------------
+fix_host_network() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local helper=/usr/local/sbin/omega-netfix.sh
+    cat > "$helper" <<'NETFIX'
+#!/usr/bin/env bash
+# Vizion Panel: make Incus/LXD/libvirt guests reach the internet.
+BR=""
+if command -v incus >/dev/null 2>&1; then
+  BR=$(incus network list --format csv 2>/dev/null | awk -F, '$2=="bridge" && toupper($3)=="YES"{print $1}')
+fi
+if [ -z "$BR" ] && command -v lxc >/dev/null 2>&1; then
+  BR=$(lxc network list --format csv 2>/dev/null | awk -F, '$2=="bridge" && toupper($3)=="YES"{print $1}')
+fi
+[ -n "$BR" ] || BR="incusbr0 lxdbr0"
+
+for b in $BR; do
+  ip link show "$b" >/dev/null 2>&1 || continue
+  if command -v incus >/dev/null 2>&1 && incus network show "$b" >/dev/null 2>&1; then
+    for k in ipv4.dhcp ipv4.nat; do
+      [ "$(incus network get "$b" "$k" 2>/dev/null)" = "false" ] && incus network set "$b" "$k" true
+    done
+    case "$(incus network get "$b" ipv4.address 2>/dev/null)" in
+      none|"") incus network set "$b" ipv4.address auto 2>/dev/null ;;
+    esac
+  fi
+done
+
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-omega-forward.conf
+
+for b in $BR; do
+  ip link show "$b" >/dev/null 2>&1 || continue
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow in on "$b" >/dev/null 2>&1
+    ufw route allow in on "$b" >/dev/null 2>&1
+    ufw route allow out on "$b" >/dev/null 2>&1
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    # Docker sets FORWARD to DROP; DOCKER-USER (when present) is checked first.
+    for chain in INPUT FORWARD; do
+      iptables -C "$chain" -i "$b" -j ACCEPT 2>/dev/null || iptables -I "$chain" -i "$b" -j ACCEPT 2>/dev/null
+    done
+    iptables -C FORWARD -o "$b" -j ACCEPT 2>/dev/null || iptables -I FORWARD -o "$b" -j ACCEPT 2>/dev/null
+    if iptables -nL DOCKER-USER >/dev/null 2>&1; then
+      iptables -C DOCKER-USER -i "$b" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i "$b" -j ACCEPT 2>/dev/null
+      iptables -C DOCKER-USER -o "$b" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -o "$b" -j ACCEPT 2>/dev/null
+    fi
+  fi
+done
+
+if [ -e /dev/kvm ] || modprobe kvm 2>/dev/null; then
+  modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null
+  [ -e /dev/kvm ] && { chmod 666 /dev/kvm 2>/dev/null; usermod -aG kvm omega-panel 2>/dev/null; }
+fi
+exit 0
+NETFIX
+    chmod +x "$helper"
+    if command -v systemctl >/dev/null 2>&1 && [[ ! -f /etc/systemd/system/omega-netfix.service ]]; then
+        cat > /etc/systemd/system/omega-netfix.service <<'UNIT'
+[Unit]
+Description=Vizion Panel guest network fix (firewall, NAT, forwarding)
+After=network-online.target incus.service docker.service ufw.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/omega-netfix.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable omega-netfix.service >/dev/null 2>&1 || true
+    fi
+    if bash "$helper" >/dev/null 2>&1; then
+        ok "guest network fixed (DHCP, NAT, firewall, forwarding)"
+    else
+        warn "guest network fix reported a problem; run: sudo bash $helper"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Panel install / update / repair / doctor
 # ---------------------------------------------------------------------------
 install_panel() {
@@ -175,6 +263,7 @@ install_panel() {
     draw_steps "Checking systemd and Python" "Installing LXC / KVM / Incus stack" \
                "Creating the panel virtualenv" "Seeding the local node" "Starting 24/7 services"
     run_animated "Installing the panel (setup.sh)" bash "$ROOT_DIR/setup.sh" "$@" || die "Install failed. See $LOG_FILE"
+    fix_host_network
     ok "Install finished."
     echo
     echo "  Panel URL : http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PANEL_PORT}"
@@ -244,6 +333,7 @@ install_node_type() {
     run_animated "Node stack (${type})" bash "$ROOT_DIR/scripts/omega-node-install.sh" "--type=${type}" \
         || die "Node install failed. See $LOG_FILE"
     echo
+    fix_host_network
     ok "Node stack ready: ${type}"
     echo "  Agent health : http://127.0.0.1:${NODE_PORT}/api/health"
     echo "  Now connect it to the panel: menu 6 -> 4, or:"
@@ -477,6 +567,7 @@ fetch_latest() {   # downloads latest code into $1
 }
 
 restart_services() {
+    fix_host_network
     # Make sure the Discord bot / background worker unit exists (added in newer versions).
     if [[ -f "$INSTALL_DIR/bot_runner.py" && ! -f /etc/systemd/system/omega-bot.service ]]; then
         local svc_user="omega-panel"; id "$svc_user" >/dev/null 2>&1 || svc_user="root"
@@ -700,6 +791,7 @@ case "${1:-}" in
     --update) update_panel ;;
     --fix|--repair) fix_panel ;;
     --doctor) doctor_panel ;;
+    --net-fix|--netfix) fix_host_network ;;
     --help|-h)
         clear_screen
         print_logo
@@ -721,6 +813,7 @@ Usage: sudo bash omega.sh [option]
   --update           download latest code + re-run the installer
   --fix              repair deps/permissions and restart services
   --doctor           check code, services, port and show logs
+  --net-fix          fix guest DHCP/NAT/firewall so VPS get internet (SSHX)
 
 Node types (each installs a different stack):
   lxc    plain LXC containers only (no QEMU/libvirt packages)
