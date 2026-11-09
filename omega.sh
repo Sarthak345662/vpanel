@@ -323,6 +323,27 @@ UNIT
     return 0
 }
 
+# SSHX for Non-KVM VPS runs on the host (the guest boots too slowly without
+# KVM), so the host needs the sshx binary. Safe to run repeatedly.
+install_host_sshx() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    command -v sshx >/dev/null 2>&1 && return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    local arch tmp
+    case "$(uname -m)" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) arch="" ;; esac
+    if [[ -n "$arch" ]]; then
+        tmp="$(mktemp -d)"
+        if curl -fsSL "https://s3.amazonaws.com/sshx/sshx-${arch}-unknown-linux-musl.tar.gz" -o "$tmp/sshx.tgz" \
+           && tar -xzf "$tmp/sshx.tgz" -C "$tmp" && [[ -f "$tmp/sshx" ]]; then
+            install -m 0755 "$tmp/sshx" /usr/local/bin/sshx
+        fi
+        rm -rf "$tmp"
+    fi
+    command -v sshx >/dev/null 2>&1 || { curl -fsSL https://sshx.io/get | sh >/dev/null 2>&1 || true; }
+    if command -v sshx >/dev/null 2>&1; then ok "sshx installed on the host"; else warn "could not install sshx on the host (panel will retry on first use)"; fi
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # One function that applies every host-side fix. Runs on install, update,
 # fix and node install, so nothing has to be pasted by hand afterwards.
@@ -333,6 +354,7 @@ omega_post_setup() {
     keep_vms_alive
     fix_host_network
     setup_vm_autostart
+    install_host_sshx
     # SSH client is needed by the panel to talk to Non-KVM guests.
     if ! command -v ssh >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client >/dev/null 2>&1 || warn "could not install openssh-client"
