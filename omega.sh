@@ -164,6 +164,26 @@ need_systemd() {
     command -v systemctl >/dev/null 2>&1 || die "systemd is required (Ubuntu/Debian server)."
 }
 
+# Non-KVM VPS are QEMU processes started by the panel, so they live inside the
+# panel service's cgroup. systemd's default KillMode kills them on every
+# restart/update, which switched the VPS off right after it had booted.
+keep_vms_alive() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local unit d changed=0
+    for unit in omega-panel omega-bot omega-jobs omega-node; do
+        [[ -f "/etc/systemd/system/${unit}.service" ]] || continue
+        d="/etc/systemd/system/${unit}.service.d"
+        if [[ ! -f "$d/keep-vms.conf" ]]; then
+            mkdir -p "$d"
+            printf '[Service]\nKillMode=process\n' > "$d/keep-vms.conf"
+            changed=1
+        fi
+    done
+    [[ "$changed" -eq 1 ]] && systemctl daemon-reload 2>/dev/null || true
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Host network fix: lets VPS/guests get an IP, DNS and internet (needed by SSHX).
 # Runs automatically on install, update, fix and node install, and again at
@@ -253,6 +273,81 @@ UNIT
 }
 
 # ---------------------------------------------------------------------------
+# Non-KVM VPS auto-start after a server reboot.
+# A VPS that was running keeps a leftover qemu.pid; on boot we start those again.
+# ---------------------------------------------------------------------------
+setup_vm_autostart() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local helper=/usr/local/sbin/omega-vm-autostart.sh
+    cat > "$helper" <<'AUTOSTART'
+#!/usr/bin/env bash
+ROOT="${OMEGA_NONKVM_DIR:-/var/lib/omega-panel/nonkvm}"
+APP="${OMEGA_INSTALL_DIR:-/opt/omega-panel}"
+[ -d "$ROOT" ] || exit 0
+for d in "$ROOT"/*/; do
+  n="$(basename "$d")"
+  [ -f "$d/state.env" ] && [ -f "$d/qemu.pid" ] || continue
+  pid="$(cat "$d/qemu.pid" 2>/dev/null)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+  echo "starting Non-KVM VPS $n"
+  if id omega-panel >/dev/null 2>&1; then
+    runuser -u omega-panel -- bash "$APP/scripts/omega-nonkvm.sh" start --name "$n" || true
+  else
+    bash "$APP/scripts/omega-nonkvm.sh" start --name "$n" || true
+  fi
+done
+exit 0
+AUTOSTART
+    chmod +x "$helper"
+    if [[ ! -f /etc/systemd/system/omega-vm-autostart.service ]]; then
+        cat > /etc/systemd/system/omega-vm-autostart.service <<'UNIT'
+[Unit]
+Description=Vizion Panel: start Non-KVM VPS that were running before reboot
+After=network-online.target omega-netfix.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+KillMode=process
+ExecStart=/usr/local/sbin/omega-vm-autostart.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable omega-vm-autostart.service >/dev/null 2>&1 || true
+    fi
+    ok "Non-KVM VPS will start again after a server reboot"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# One function that applies every host-side fix. Runs on install, update,
+# fix and node install, so nothing has to be pasted by hand afterwards.
+# ---------------------------------------------------------------------------
+omega_post_setup() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    say "Applying host fixes (network, VPS keep-alive, auto-start) ..."
+    keep_vms_alive
+    fix_host_network
+    setup_vm_autostart
+    # SSH client is needed by the panel to talk to Non-KVM guests.
+    if ! command -v ssh >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client >/dev/null 2>&1 || warn "could not install openssh-client"
+    fi
+    # Panel user needs to own the Non-KVM state and use KVM.
+    if id omega-panel >/dev/null 2>&1; then
+        mkdir -p /var/lib/omega-panel/nonkvm /var/lib/omega-panel/images 2>/dev/null || true
+        chown -R omega-panel:omega-panel /var/lib/omega-panel/nonkvm /var/lib/omega-panel/images 2>/dev/null || true
+        [[ -e /dev/kvm ]] && usermod -aG kvm omega-panel 2>/dev/null || true
+    fi
+    ok "host fixes applied"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Panel install / update / repair / doctor
 # ---------------------------------------------------------------------------
 install_panel() {
@@ -263,7 +358,7 @@ install_panel() {
     draw_steps "Checking systemd and Python" "Installing LXC / KVM / Incus stack" \
                "Creating the panel virtualenv" "Seeding the local node" "Starting 24/7 services"
     run_animated "Installing the panel (setup.sh)" bash "$ROOT_DIR/setup.sh" "$@" || die "Install failed. See $LOG_FILE"
-    fix_host_network
+    omega_post_setup
     ok "Install finished."
     echo
     echo "  Panel URL : http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PANEL_PORT}"
@@ -333,7 +428,7 @@ install_node_type() {
     run_animated "Node stack (${type})" bash "$ROOT_DIR/scripts/omega-node-install.sh" "--type=${type}" \
         || die "Node install failed. See $LOG_FILE"
     echo
-    fix_host_network
+    omega_post_setup
     ok "Node stack ready: ${type}"
     echo "  Agent health : http://127.0.0.1:${NODE_PORT}/api/health"
     echo "  Now connect it to the panel: menu 6 -> 4, or:"
@@ -567,7 +662,7 @@ fetch_latest() {   # downloads latest code into $1
 }
 
 restart_services() {
-    fix_host_network
+    omega_post_setup
     # Make sure the Discord bot / background worker unit exists (added in newer versions).
     if [[ -f "$INSTALL_DIR/bot_runner.py" && ! -f /etc/systemd/system/omega-bot.service ]]; then
         local svc_user="omega-panel"; id "$svc_user" >/dev/null 2>&1 || svc_user="root"
@@ -610,6 +705,7 @@ UNIT
 update_panel() {
     need_root
     need_systemd
+    keep_vms_alive
     local tmp
     if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         say "Git checkout found - pulling the latest code ..."
@@ -630,6 +726,7 @@ update_panel() {
 fix_panel() {
     need_root
     need_systemd
+    keep_vms_alive
     say "Repairing ${INSTALL_DIR} ..."
     [[ -d "$INSTALL_DIR" ]] || die "Panel is not installed. Choose Install first."
     if [[ "$ROOT_DIR" != "$INSTALL_DIR" && -f "$ROOT_DIR/app.py" ]]; then
@@ -792,6 +889,7 @@ case "${1:-}" in
     --fix|--repair) fix_panel ;;
     --doctor) doctor_panel ;;
     --net-fix|--netfix) fix_host_network ;;
+    --post-setup|--apply-fixes) omega_post_setup ;;
     --help|-h)
         clear_screen
         print_logo
