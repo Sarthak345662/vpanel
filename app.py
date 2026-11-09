@@ -16970,6 +16970,7 @@ OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthe
       -o LogLevel=ERROR -o ServerAliveInterval=30 -p __PORT__)
 SSH=__SSH__
 started=$(date +%s)
+fixtried=0
 printf '\033[1;36mVizion Panel - Non-KVM VPS terminal\033[0m\n'
 while true; do
   printf '\033[33mInput is disabled until the guest finishes booting. Live boot log:\033[0m\n'
@@ -16977,9 +16978,14 @@ while true; do
   TAILPID=$!
   n=0
   until err=$("$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null 2>&1); do
-    if printf '%s' "$err" | grep -q 'Permission denied' && ! grep -q '^SSHFIX=3' "$STATE" 2>/dev/null; then
+    if [ "$fixtried" = 0 ] && printf '%s' "$err" | grep -q 'Permission denied'; then
+      fixtried=1
       printf '\n\033[33m[Vizion] Guest refuses the password (old boot config). Rebuilding it and rebooting the guest once...\033[0m\n'
-      "$NONKVM" fixssh --name __NAME__ >/dev/null 2>&1
+      fixout=$("$NONKVM" fixssh --name __NAME__ 2>&1)
+      printf '%s\n' "$fixout" | tail -n 4 | cut -c1-100
+      case "$fixout" in
+        *"Unknown action"*) printf '\033[31m[Vizion] scripts/omega-nonkvm.sh on the server is old. Push the new file and run the --update command.\033[0m\n' ;;
+      esac
       started=$(date +%s)
     fi
     sleep 3
