@@ -16923,6 +16923,53 @@ def _omega_nonkvm_bridge_stop(name):
     time.sleep(0.5)
 
 
+def _omega_nonkvm_wait_root_ready(name, port, password, fix_path, timeout=900, report=None):
+    """Block until root can log in to the Non-KVM guest over SSH.
+
+    The SSHX link is only handed out after this succeeds, so opening it lands
+    straight in a working root shell instead of an empty/waiting terminal. If the
+    guest refuses the password (old boot config) the repair script runs once.
+    Returns True when ready, False on timeout (the terminal then keeps retrying).
+    """
+    started = time.time()
+    deadline = started + max(60, int(timeout))
+    fixed = False
+    last_report = 0.0
+    while time.time() < deadline:
+        try:
+            code, output = _omega_ssh_exec(port, password, "true", timeout=60)
+        except Exception as exc:
+            code, output = 255, str(exc)
+        if code == 0:
+            return True
+        text = output.decode("utf-8", errors="ignore") if isinstance(output, (bytes, bytearray)) else str(output or "")
+        if not fixed and "Permission denied" in text and os.path.exists(fix_path):
+            fixed = True
+            if report:
+                try:
+                    report(55, "Repairing root login (one guest reboot)\u2026")
+                except Exception:
+                    pass
+            try:
+                subprocess.run(["bash", fix_path], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=180)
+            except Exception:
+                app.logger.debug("sshx-fix.sh failed", exc_info=True)
+            started = time.time()
+            deadline = max(deadline, started + 420)
+        now = time.time()
+        if report and now - last_report >= 5:
+            last_report = now
+            elapsed = int(now - started)
+            pct = min(85, 50 + int(35 * min(1.0, elapsed / 300.0)))
+            try:
+                report(pct, "Waiting for the VPS to boot (%dm%02ds)\u2026" % (elapsed // 60, elapsed % 60))
+            except Exception:
+                pass
+        time.sleep(4)
+    return False
+
+
 def _omega_nonkvm_host_sshx(name, report=None, timeout=60):
     """Start sshx on the host for a Non-KVM VPS and return its share link."""
     def _step(percent, message):
@@ -17058,6 +17105,14 @@ bash "$NONKVM" start --name "$NAME"
     with open(fix_path, "w", encoding="utf-8") as handle:
         handle.write(fix_text)
     os.chmod(fix_path, 0o700)
+
+    # Wait for the guest first, so the SSHX link opens directly in a root shell.
+    try:
+        _omega_nonkvm_wait_root_ready(
+            name, port, password, fix_path,
+            timeout=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "900")), report=report)
+    except Exception:
+        app.logger.debug("waiting for the Non-KVM guest failed", exc_info=True)
 
     log_path = os.path.join(state_dir, "sshx-bridge.log")
     open(log_path, "w").close()
