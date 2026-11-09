@@ -309,6 +309,70 @@ conn.execute("DELETE FROM vps WHERE container_id='omega-check-lxc'")
 conn.commit()
 conn.close()
 
+print("SECTION 9", flush=True)
+# 9. Creating or replacing an SSHX link must not block the browser: the panel
+#    starts a job, the page polls it, and the finished link lands in the row.
+conn = panel.get_db()
+conn.execute(
+    "INSERT INTO vps (user_id, node_id, container_id, container_name, ssh_command, ssh_password, "
+    "os_type, ram, cpu, disk, status, vps_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    (admin_id, nodes[0]["id"], "omega-check-sshx3", "omega-check-sshx3", "",
+     "pw", "ubuntu-22.04", "2GB", "1 vCPU", "20GB", "running", "lxc"),
+)
+conn.commit()
+job_vps_id = conn.execute("SELECT id FROM vps WHERE container_id='omega-check-sshx3'").fetchone()["id"]
+conn.close()
+
+real_ensure = panel._omega_bot_ensure_sshx
+seen = {}
+
+
+def _fake_ensure(vps_id, force=False, timeout=None, wait_ssh=None, report=None):
+    seen["wait_ssh"] = wait_ssh
+    if report:
+        report(30, "Installing sshx inside the VPS\u2026")
+    return "https://sshx.io/s/jobtest"
+
+
+panel._omega_bot_ensure_sshx = _fake_ensure
+job_id = None
+status = None
+try:
+    started = client.post("/vps/%d/sshx-job" % job_vps_id, headers={"Accept": "application/json"})
+    started_data = started.get_json() or {}
+    job_id = started_data.get("job_id")
+    deadline = _time.time() + 10
+    while job_id and _time.time() < deadline:
+        polled = client.get("/api/vps-create/%d" % job_id).get_json() or {}
+        status = polled.get("status")
+        if status in ("done", "error"):
+            break
+        _time.sleep(0.1)
+finally:
+    panel._omega_bot_ensure_sshx = real_ensure
+
+check("sshx job endpoint returns a job", started.status_code == 200 and bool(job_id),
+      str(started_data))
+check("sshx job finishes without blocking the request", status == "done", str(status))
+conn = panel.get_db()
+job_row = conn.execute("SELECT ssh_command FROM vps WHERE id=?", (job_vps_id,)).fetchone()
+conn.close()
+check("sshx job stores the new link",
+      bool(job_row) and job_row["ssh_command"] == "https://sshx.io/s/jobtest",
+      str(job_row["ssh_command"] if job_row else None))
+page = client.get("/vps/%d" % job_vps_id)
+page_body = page.get_data(as_text=True)
+check("vps page offers the job-driven sshx button",
+      page.status_code == 200 and 'data-sshx-url="/vps/%d/sshx-job"' % job_vps_id in page_body,
+      str(page.status_code))
+check("vps page shows the new sshx link", "https://sshx.io/s/jobtest" in page_body, "")
+
+conn = panel.get_db()
+conn.execute("DELETE FROM vps WHERE id=?", (job_vps_id,))
+conn.execute("DELETE FROM vps_create_jobs WHERE vps_id=?", (job_vps_id,))
+conn.commit()
+conn.close()
+
 print()
 if failures:
     print("FAILURES:", len(failures))

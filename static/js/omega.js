@@ -211,6 +211,10 @@
   const nativeFetch = window.fetch;
   if (nativeFetch) {
     window.fetch = function(input, init){
+      if (init && init.headers && (init.headers['X-Omega-Job'] || init.headers['x-omega-job'])) {
+        // Job-driven flows paint their own overlay with real progress.
+        return nativeFetch.apply(this, arguments);
+      }
       const url = typeof input === 'string' ? input : (input && input.url) || '';
       const a = match(url);
       if (a) { show(a); }
@@ -227,5 +231,118 @@
     if (!a) return;
     if (btn.closest('form')) return;  // submit handler covers it
     show(a); setTimeout(hide, 4000);
+  }, true);
+})();
+
+/* ---- SSHX link: background job with real progress ----------------------- */
+(function(){
+  if (window.__omegaSshxJob) return;
+  window.__omegaSshxJob = true;
+  var box = null, timer = null, done = false;
+  function ensure(){
+    if (box) return box;
+    box = document.createElement('div');
+    box.id = 'omega-sshx-overlay';
+    box.className = 'omega-action-overlay';
+    box.innerHTML = '<div class="oao-card">' +
+      '<div class="oao-spin"></div>' +
+      '<h4>Creating SSHX access\u2026</h4>' +
+      '<p>Starting\u2026</p>' +
+      '<div class="oao-bar"><i></i></div>' +
+      '<div class="oao-msg" style="display:none;margin-top:12px;font-size:12px;line-height:1.5;text-align:left;color:#ffb3c1;max-height:170px;overflow:auto;white-space:pre-wrap"></div>' +
+      '<button type="button" class="oao-close" style="display:none;margin-top:12px;width:100%;padding:10px;border-radius:11px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.06);color:#f5f2ff;font-weight:600;cursor:pointer">Close</button>' +
+      '<div class="oao-dots"><i></i><i></i><i></i></div></div>';
+    document.body.appendChild(box);
+    box.querySelector('.oao-close').addEventListener('click', hide);
+    return box;
+  }
+  function show(){
+    var el = ensure();
+    done = false;
+    el.querySelector('h4').textContent = 'Creating SSHX access\u2026';
+    el.querySelector('p').textContent = 'Starting\u2026';
+    el.querySelector('.oao-bar i').style.width = '8%';
+    el.querySelector('.oao-msg').style.display = 'none';
+    el.querySelector('.oao-msg').textContent = '';
+    el.querySelector('.oao-close').style.display = 'none';
+    requestAnimationFrame(function(){ el.classList.add('show'); });
+  }
+  function hide(){
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (!box) return;
+    box.classList.remove('show');
+  }
+  function paint(job){
+    var el = ensure();
+    var pct = Math.max(8, Math.min(100, job.progress || 0));
+    el.querySelector('.oao-bar i').style.width = pct + '%';
+    el.querySelector('p').textContent = job.message || 'Working\u2026';
+  }
+  function fail(message, detail){
+    var el = ensure();
+    el.querySelector('h4').textContent = 'SSHX link failed';
+    el.querySelector('p').textContent = message || 'The panel could not create the link.';
+    el.querySelector('.oao-bar i').style.width = '100%';
+    var msg = el.querySelector('.oao-msg');
+    if (detail) { msg.textContent = detail; msg.style.display = 'block'; }
+    el.querySelector('.oao-close').style.display = 'block';
+    done = true;
+  }
+  function poll(id, started){
+    fetch('/api/vps-create/' + id, {headers: {'Accept': 'application/json', 'X-Omega-Job': '1'}, cache: 'no-store'})
+      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(job){
+        if (done) return;
+        paint(job);
+        if (job.status === 'done') {
+          done = true;
+          ensure().querySelector('p').textContent = 'Link ready \u2014 reloading\u2026';
+          ensure().querySelector('.oao-bar i').style.width = '100%';
+          setTimeout(function(){ window.location.reload(); }, 700);
+          return;
+        }
+        if (job.status === 'error') {
+          fail(job.message || 'The guest did not return a link.', job.error || job.message);
+          return;
+        }
+        if (Date.now() - started > 360000) {
+          fail('Still working after 6 minutes. It keeps running in the background \u2014 reload this page in a minute.',
+               'The panel job is still alive; the guest is probably still installing sshx or has no internet.');
+          return;
+        }
+        timer = setTimeout(function(){ poll(id, started); }, 1500);
+      })
+      .catch(function(){
+        if (done) return;
+        timer = setTimeout(function(){ poll(id, started); }, 2500);
+      });
+  }
+  function start(url){
+    show();
+    var started = Date.now();
+    fetch(url, {method: 'POST', credentials: 'same-origin',
+                headers: {'Accept': 'application/json', 'X-Omega-Job': '1', 'X-Omega-Async': '1'}})
+      .then(function(r){
+        return r.json().then(function(data){
+          if (!r.ok || !data.job_id) throw new Error(data.error || ('HTTP ' + r.status));
+          poll(data.job_id, started);
+          return null;
+        });
+      })
+      .catch(function(err){ fail(String(err && err.message ? err.message : err), ''); });
+  }
+  // Capture the click before the browser submits the form, so the generic
+  // action overlay never takes over and the request cannot stall the page.
+  document.addEventListener('click', function(ev){
+    var btn = ev.target && ev.target.closest ? ev.target.closest('form.js-sshx button[type="submit"]') : null;
+    if (!btn) return;
+    var form = btn.closest('form');
+    var url = form && form.getAttribute('data-sshx-url');
+    if (!url) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    btn.disabled = true;
+    start(url);
+    setTimeout(function(){ btn.disabled = false; }, 4000);
   }, true);
 })();

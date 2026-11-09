@@ -3355,12 +3355,14 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                             <div class="ssh-box"><code>{{ vps['ssh_command'] }}</code></div>
                             <a class="btn btn-primary btn-sm" href="{{ vps['ssh_command'] }}" target="_blank" rel="noopener" style="width:100%;text-decoration:none;margin-bottom:8px;">Open SSHX</a>
                             <button class="btn btn-ghost btn-sm" onclick='copyToClipboard({{ vps['ssh_command']|tojson }})' style="width:100%;margin-bottom:8px;">Copy SSHX link</button>
-                            <form method="POST" action="{{ url_for('regen_ssh', vps_id=vps['id']) }}">
-                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Regenerate SSHX link</button>
+                            <form method="POST" class="js-sshx" data-sshx-url="/admin/vps/{{ vps['id'] }}/sshx-job"
+                                  action="{{ url_for('regen_ssh', vps_id=vps['id']) }}">
+                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Get a new SSHX link</button>
                             </form>
                             {% else %}
                             <p class="text-dim" style="font-size:13px;">No SSHX link yet. Create one and the VPS opens in your browser.</p>
-                            <form method="POST" action="{{ url_for('regen_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
+                            <form method="POST" class="js-sshx" data-sshx-url="/admin/vps/{{ vps['id'] }}/sshx-job"
+                                  action="{{ url_for('regen_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
                                 <button class="btn btn-primary btn-sm" type="submit" style="width:100%;">Create SSHX link</button>
                             </form>
                             {% endif %}
@@ -3964,12 +3966,14 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                             <div class="ssh-box"><code>{{ vps['ssh_command'] }}</code></div>
                             <a class="btn btn-primary btn-sm" href="{{ vps['ssh_command'] }}" target="_blank" rel="noopener" style="width:100%;text-decoration:none;margin-bottom:8px;">Open SSHX</a>
                             <button class="btn btn-ghost btn-sm" onclick='copyToClipboard({{ vps['ssh_command']|tojson }})' style="width:100%;margin-bottom:8px;">Copy SSHX link</button>
-                            <form method="POST" action="{{ url_for('admin_regen_ssh', vps_id=vps['id']) }}">
-                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Regenerate SSHX link</button>
+                            <form method="POST" class="js-sshx" data-sshx-url="/vps/{{ vps['id'] }}/sshx-job"
+                                  action="{{ url_for('admin_regen_ssh', vps_id=vps['id']) }}">
+                                <button class="btn btn-ghost btn-sm" type="submit" style="width:100%;">Get a new SSHX link</button>
                             </form>
                             {% else %}
                             <p class="text-dim" style="font-size:13px;">No SSHX link yet. Create one and the VPS opens in your browser.</p>
-                            <form method="POST" action="{{ url_for('admin_regen_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
+                            <form method="POST" class="js-sshx" data-sshx-url="/vps/{{ vps['id'] }}/sshx-job"
+                                  action="{{ url_for('admin_regen_ssh', vps_id=vps['id']) }}" style="margin-top:8px;">
                                 <button class="btn btn-primary btn-sm" type="submit" style="width:100%;">Create SSHX link</button>
                             </form>
                             {% endif %}
@@ -16561,9 +16565,21 @@ def fix_vps_ssh(vps_id):
     return redirect(url_for("vps_detail", vps_id=vps_id))
 
 
-def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None):
-    """Return a working SSHX URL for a VPS, creating and caching one if needed."""
+def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, report=None):
+    """Return a working SSHX URL for a VPS, creating and caching one if needed.
+
+    ``report(percent, message)`` is optional; the panel passes its job updater so
+    the SSHX dialog shows real steps instead of a fake timer.
+    """
     import re as _re
+
+    def _step(percent, message):
+        if report is None:
+            return
+        try:
+            report(int(percent), str(message))
+        except Exception:
+            app.logger.debug("SSHX progress report failed", exc_info=True)
     conn = get_db()
     try:
         vps = conn.execute("SELECT * FROM vps WHERE id = ?", (int(vps_id),)).fetchone()
@@ -16660,6 +16676,7 @@ tail -n 20 /tmp/sshx_output.log 2>/dev/null
 exit 0
 """
         command = script
+        _step(30, "Installing sshx inside the VPS\u2026")
         exit_code, output = lxc_attach(
             container_id, command,
             timeout=int(timeout or os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
@@ -16708,7 +16725,9 @@ exit 0
             detail = " ".join(str(output or "").split())[-320:] or "sshx wrote nothing to /tmp/sshx_output.log"
             raise RuntimeError(f"SSHX started, but no share URL was returned: {detail}")
         ssh_command = match.group(0)
+        _step(90, "Saving the sshx.io share link\u2026")
     else:
+        _step(30, "Asking the node for an SSHX link\u2026")
         response, code = call_node_api(
             node["node_url"], node["api_key"],
             f"/api/container/{container_id}/regen-ssh", method="POST",
@@ -16747,9 +16766,9 @@ def _omega_create_sshx_for_new_vps(vps_id, vps_type):
     press "Create SSHX link" on the VPS page once it is up.
     """
     if str(vps_type or "").strip().lower() == "nonkvm":
-        budget, wait = 120, 180
+        budget, wait = 150, 120
     else:
-        budget, wait = 150, 0
+        budget, wait = 120, 0
     try:
         return _omega_bot_ensure_sshx(vps_id, force=True, timeout=budget, wait_ssh=wait) or ""
     except Exception as exc:
@@ -18453,6 +18472,93 @@ def omega_vps_create_job(job_id):
         'vps_id': vps_id,
         'url': url_for('vps_detail', vps_id=vps_id) if vps_id else '',
     })
+
+
+# --- SSHX link: background job so the page never blocks on the guest --------
+# Creating or replacing an SSHX link installs a binary inside the guest and can
+# take a couple of minutes. Running that inside the POST made the browser sit on
+# a spinner (and the request time out behind a proxy), so it runs as a job that
+# the page polls: real step names, a real percentage, and a real error message.
+
+
+def _omega_start_sshx_job(vps_row, owner_id, base_url):
+    omega_create_jobs_schema()
+    vps_type = "lxc"
+    try:
+        if "vps_type" in vps_row.keys() and vps_row["vps_type"]:
+            vps_type = str(vps_row["vps_type"]).strip().lower()
+    except Exception:
+        pass
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            """INSERT INTO vps_create_jobs(admin_id, user_id, vps_id, vps_type,
+                                           status, progress, message)
+               VALUES (?,?,?,?,?,?,?)""",
+            (owner_id, vps_row["user_id"], vps_row["id"], vps_type, "running", 10,
+             "Preparing SSHX inside the VPS\u2026"),
+        )
+        conn.commit()
+        job_id = cur.lastrowid
+    finally:
+        conn.close()
+
+    def worker():
+        with app.test_request_context("/", base_url=base_url):
+            try:
+                def report(progress, message):
+                    _omega_job_update(job_id, status="running", progress=int(progress),
+                                      message=str(message)[:300])
+                link = _omega_bot_ensure_sshx(
+                    vps_row["id"], force=True,
+                    timeout=int(os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
+                    wait_ssh=180 if vps_type == "nonkvm" else 0,
+                    report=report,
+                )
+                if link:
+                    conn = get_db()
+                    try:
+                        conn.execute("UPDATE vps SET ssh_command=? WHERE id=?",
+                                     (link, int(vps_row["id"])))
+                        conn.commit()
+                    finally:
+                        conn.close()
+                _omega_job_update(job_id, status="done", progress=100,
+                                  message="SSHX link ready", vps_id=vps_row["id"])
+                add_log("info", "SSHX link created for VPS %s: %s" % (vps_row["id"], link), "vps")
+            except Exception as exc:
+                app.logger.warning("SSHX job %s failed: %s", job_id, exc)
+                _omega_job_update(job_id, status="error", progress=100,
+                                  message=str(exc)[:300], error=str(exc)[:3000])
+
+    threading.Thread(target=worker, name="omega-sshx-%s" % job_id, daemon=True).start()
+    return job_id
+
+
+def _omega_sshx_job_response(vps_id, admin_route=False):
+    vps, _node = get_node_for_vps(int(vps_id))
+    if not vps:
+        return jsonify({"error": "VPS not found"}), 404
+    if not session.get("is_admin") and int(vps["user_id"]) != int(session["user_id"]):
+        return jsonify({"error": "Not allowed"}), 403
+    running = str(vps["status"] or "").strip().lower()
+    if running in ("suspended", "deleted", "expired"):
+        return jsonify({"error": "Start the VPS before creating its SSHX link."}), 400
+    base_url = ((_omega_settings_dict().get("panel_public_url") or request.url_root).rstrip("/"))
+    job_id = _omega_start_sshx_job(vps, session["user_id"], base_url)
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/vps/<int:vps_id>/sshx-job", methods=["POST"])
+@login_required
+def omega_vps_sshx_job(vps_id):
+    return _omega_sshx_job_response(vps_id)
+
+
+@app.route("/admin/vps/<int:vps_id>/sshx-job", methods=["POST"])
+@login_required
+def omega_admin_vps_sshx_job(vps_id):
+    return _omega_sshx_job_response(vps_id, admin_route=True)
 
 
 try:
