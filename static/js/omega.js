@@ -280,11 +280,14 @@
   }
   function fail(message, detail){
     var el = ensure();
+    var text = message || 'The panel could not create the link.';
+    var summary = text.length > 180 ? text.slice(0, 177) + '\u2026' : text;
     el.querySelector('h4').textContent = 'SSHX link failed';
-    el.querySelector('p').textContent = message || 'The panel could not create the link.';
+    el.querySelector('p').textContent = summary;
     el.querySelector('.oao-bar i').style.width = '100%';
     var msg = el.querySelector('.oao-msg');
-    if (detail) { msg.textContent = detail; msg.style.display = 'block'; }
+    // Only repeat the full text when the one-line summary had to cut it.
+    if (detail && detail !== summary) { msg.textContent = detail; msg.style.display = 'block'; }
     el.querySelector('.oao-close').style.display = 'block';
     done = true;
   }
@@ -305,9 +308,9 @@
           fail(job.message || 'The guest did not return a link.', job.error || job.message);
           return;
         }
-        if (Date.now() - started > 360000) {
-          fail('Still working after 6 minutes. It keeps running in the background \u2014 reload this page in a minute.',
-               'The panel job is still alive; the guest is probably still installing sshx or has no internet.');
+        if (Date.now() - started > 900000) {
+          fail('Still working after 15 minutes. The job keeps running in the background \u2014 reload this page in a minute.',
+               'A Non-KVM VPS boots slowly without KVM; the panel is still waiting for the guest.');
           return;
         }
         timer = setTimeout(function(){ poll(id, started); }, 1500);

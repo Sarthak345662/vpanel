@@ -101,7 +101,18 @@ chmod 755 /opt/udhcpc.sh"""], timeout=30, capture_output=True)
                 break
             _sp.run(['incus', 'exec', name, '--', 'busybox', 'udhcpc', '-i', 'eth0', '-n', '-s', '/opt/udhcpc.sh'], timeout=15, capture_output=True)
             time.sleep(2)
-        _sp.run(['incus', 'exec', name, '--', 'sh', '-c', "grep -q 'nameserver' /etc/resolv.conf 2>/dev/null || echo 'nameserver 10.132.115.1' > /etc/resolv.conf"], timeout=10, capture_output=True)
+        _sp.run(['incus', 'exec', name, '--', 'sh', '-c', """
+if ! getent hosts deb.debian.org >/dev/null 2>&1; then
+  mkdir -p /etc/systemd/resolved.conf.d 2>/dev/null || true
+  printf '[Resolve]\\nDNS=1.1.1.1 8.8.8.8\\n' > /etc/systemd/resolved.conf.d/omega.conf 2>/dev/null || true
+  systemctl restart systemd-resolved >/dev/null 2>&1 || true
+  if ! getent hosts deb.debian.org >/dev/null 2>&1; then
+    systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
+    rm -f /etc/resolv.conf 2>/dev/null || true
+    printf 'nameserver 1.1.1.1\\nnameserver 8.8.8.8\\nnameserver 9.9.9.9\\noptions timeout:2 attempts:2\\n' > /etc/resolv.conf 2>/dev/null || true
+  fi
+fi
+"""], timeout=15, capture_output=True)
     except:
         pass
 def _parse_ram_to_bytes(ram_str):
@@ -14382,7 +14393,12 @@ def _create_vps_for_user(user, data):
         conn.commit()
         vps_id = cur.lastrowid
         _omega_report(data, 92, "Creating the browser SSHX link…", vps_type=vps_type)
-        sshx_link = _omega_create_sshx_for_new_vps(vps_id, vps_type)
+        sshx_link = _omega_create_sshx_for_new_vps(
+            vps_id, vps_type,
+            report=lambda pct, msg: _omega_report(
+                data, 92 + int(max(0, min(100, int(pct))) * 7 / 100.0), msg,
+                vps_type=vps_type),
+        )
         if sshx_link:
             ssh_link = sshx_link
             try:
@@ -16624,6 +16640,19 @@ for _omega_pid in $(pgrep -x sshx 2>/dev/null); do
 done
 sleep 1
 rm -f /tmp/sshx_output.log
+# DNS first: images whose /etc/resolv.conf points at the systemd-resolved stub
+# (127.0.0.53) with nothing listening could not resolve sshx.io or the apt
+# mirrors, which surfaced as "curl: (28) Resolving timed out".
+if ! getent hosts sshx.io >/dev/null 2>&1; then
+  mkdir -p /etc/systemd/resolved.conf.d 2>/dev/null || true
+  printf '[Resolve]\nDNS=1.1.1.1 8.8.8.8\n' > /etc/systemd/resolved.conf.d/omega.conf 2>/dev/null || true
+  systemctl restart systemd-resolved >/dev/null 2>&1 || true
+  if ! getent hosts sshx.io >/dev/null 2>&1; then
+    systemctl disable --now systemd-resolved >/dev/null 2>&1 || true
+    rm -f /etc/resolv.conf 2>/dev/null || true
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n' > /etc/resolv.conf 2>/dev/null || true
+  fi
+fi
 if ! command -v curl >/dev/null 2>&1; then
   timeout 90 sh -c 'apt-get update -y >/dev/null 2>&1; apt-get install -y curl ca-certificates >/dev/null 2>&1' || true
 fi
@@ -16633,8 +16662,10 @@ if ! command -v sshx >/dev/null 2>&1; then
     # kills the whole step, which looked like "no output from the guest".
     if ! curl -fsS --connect-timeout 8 --max-time 25 -o /dev/null https://sshx.io/get 2>/tmp/sshx_net.log; then
       echo "OMEGA_SSHX_NO_NET"
-      tail -n 4 /tmp/sshx_net.log 2>/dev/null
-      getent hosts sshx.io 2>/dev/null || { cat /etc/resolv.conf 2>/dev/null | head -n 3; }
+      grep -v '^#' /etc/resolv.conf 2>/dev/null | grep -v '^$' | head -n 3 | sed 's/^/dns: /'
+      ip -4 addr show 2>/dev/null | grep -o 'inet [0-9.]*' | head -n 2 | sed 's/^/if: /'
+      ip route 2>/dev/null | head -n 2 | sed 's/^/route: /'
+      tail -n 2 /tmp/sshx_net.log 2>/dev/null
       exit 0
     fi
     curl -fsSL --connect-timeout 8 --max-time 150 https://sshx.io/get | sh >/tmp/sshx_install.log 2>&1 || true
@@ -16681,7 +16712,8 @@ exit 0
             container_id, command,
             timeout=int(timeout or os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
             wait_ssh=int(wait_ssh if wait_ssh is not None
-                         else os.environ.get("OMEGA_NONKVM_SSH_WAIT", "300")),
+                         else os.environ.get("OMEGA_NONKVM_SSH_WAIT", "420")),
+            wait_report=_step,
         )
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="ignore")
@@ -16757,7 +16789,7 @@ exit 0
     return ssh_command
 
 
-def _omega_create_sshx_for_new_vps(vps_id, vps_type):
+def _omega_create_sshx_for_new_vps(vps_id, vps_type, report=None):
     """Best-effort SSHX link for a VPS that was just created.
 
     Creation must finish even when the guest cannot run sshx yet (still booting,
@@ -16766,11 +16798,15 @@ def _omega_create_sshx_for_new_vps(vps_id, vps_type):
     press "Create SSHX link" on the VPS page once it is up.
     """
     if str(vps_type or "").strip().lower() == "nonkvm":
-        budget, wait = 150, 120
+        # A software-emulated guest needs minutes before sshd answers. Keep the
+        # create window patient but bounded: if the guest is still booting the
+        # record is saved anyway and "Get a new SSHX link" waits much longer.
+        budget, wait = 400, 300
     else:
         budget, wait = 120, 0
     try:
-        return _omega_bot_ensure_sshx(vps_id, force=True, timeout=budget, wait_ssh=wait) or ""
+        return _omega_bot_ensure_sshx(vps_id, force=True, timeout=budget, wait_ssh=wait,
+                                      report=report) or ""
     except Exception as exc:
         detail = " ".join(str(exc).split())[-300:]
         app.logger.warning("SSHX link not ready for VPS %s: %s", vps_id, detail)
@@ -18179,6 +18215,7 @@ def _omega_nonkvm_console_tail(name, limit=400):
 
 def lxc_attach(name, command, timeout=60, **kwargs):
     wait_ssh = kwargs.pop("wait_ssh", 0) or 0
+    wait_report = kwargs.pop("wait_report", None)
     kind = omega_vps_kind(name)
     if kind == "nonkvm":
         password, port = _omega_nonkvm_credentials(name)
@@ -18187,7 +18224,8 @@ def lxc_attach(name, command, timeout=60, **kwargs):
                 "No SSH port is recorded for this Non-KVM VPS; start it once from the panel."
             )
         if wait_ssh:
-            _omega_wait_guest_ssh(name, port, password, timeout=wait_ssh)
+            _omega_wait_guest_ssh(name, port, password, timeout=wait_ssh,
+                                  report=wait_report)
         code, output = _omega_ssh_exec(port, password, command, timeout=timeout)
         # A software-emulated guest can still be busy with boot while its sshd
         # already answered a probe, so one banner timeout is not proof that the
@@ -18496,7 +18534,8 @@ def _omega_start_sshx_job(vps_row, owner_id, base_url):
                                            status, progress, message)
                VALUES (?,?,?,?,?,?,?)""",
             (owner_id, vps_row["user_id"], vps_row["id"], vps_type, "running", 10,
-             "Preparing SSHX inside the VPS\u2026"),
+             "Waiting for the Non-KVM guest to boot\u2026" if vps_type == "nonkvm"
+             else "Preparing SSHX inside the VPS\u2026"),
         )
         conn.commit()
         job_id = cur.lastrowid
@@ -18511,8 +18550,10 @@ def _omega_start_sshx_job(vps_row, owner_id, base_url):
                                       message=str(message)[:300])
                 link = _omega_bot_ensure_sshx(
                     vps_row["id"], force=True,
-                    timeout=int(os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
-                    wait_ssh=180 if vps_type == "nonkvm" else 0,
+                    timeout=int(os.environ.get("OMEGA_SSHX_TIMEOUT",
+                                               "900" if vps_type == "nonkvm" else "180")),
+                    wait_ssh=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "600"))
+                    if vps_type == "nonkvm" else 0,
                     report=report,
                 )
                 if link:
@@ -18968,15 +19009,20 @@ def _omega_nonkvm_pid_alive(name):
         return False
 
 
-def _omega_wait_guest_ssh(name, port, password, timeout=300):
+def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
     """Wait for a Non-KVM guest to answer SSH.
 
-    Without KVM the guest boots under TCG, which regularly needs one to three
+    Without KVM the guest boots under TCG, which regularly needs several
     minutes, so a single ssh attempt right after start reported "Connection
-    timed out during banner exchange" and SSHX could never be created.
+    timed out during banner exchange" and SSHX could never be created. Progress
+    is reported to the caller so the panel window keeps moving instead of
+    looking stuck.
     """
-    deadline = time.time() + max(5, int(timeout))
+    timeout = max(30, int(timeout))
+    deadline = time.time() + timeout
+    started = time.time()
     last = ""
+    next_report = 0.0
     while time.time() < deadline:
         code, output = _omega_ssh_exec(port, password, "true", timeout=15)
         if code == 0:
@@ -18986,11 +19032,23 @@ def _omega_wait_guest_ssh(name, port, password, timeout=300):
             raise RuntimeError(
                 f"QEMU is not running for {name}; start the VPS once from the panel and retry."
             )
+        now = time.time()
+        if report and now >= next_report:
+            next_report = now + 10
+            elapsed = int(now - started)
+            report(30 + int(30 * min(1.0, elapsed / float(timeout))),
+                   "Waiting for the Non-KVM guest to boot and answer SSH "
+                   "(%dm %02ds of %dm %02ds)…"
+                   % (elapsed // 60, elapsed % 60, timeout // 60, timeout % 60))
         time.sleep(3)
+    tail = _omega_nonkvm_console_tail(name, 240)
     raise RuntimeError(
-        "The Non-KVM guest did not finish booting in %ss (%s). "
-        "Boot log: /var/lib/omega-panel/nonkvm/%s/console.log"
-        % (timeout, last or "no SSH response", name)
+        "The Non-KVM guest did not finish booting in %ss (%s). %s"
+        "Boot log: /var/lib/omega-panel/nonkvm/%s/console.log — if the console "
+        "stops growing, the VPS is stuck early in boot; try starting it again "
+        "with more RAM."
+        % (timeout, last or "no SSH response",
+           ("Console tail: " + tail + " — ") if tail else "", name)
     )
 
 

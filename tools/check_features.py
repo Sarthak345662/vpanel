@@ -373,6 +373,26 @@ conn.execute("DELETE FROM vps_create_jobs WHERE vps_id=?", (job_vps_id,))
 conn.commit()
 conn.close()
 
+print("SECTION 10", flush=True)
+# 10. Real failures seen in production: guests with a dead systemd-resolved
+#     stub had no DNS, and Non-KVM guests were declared broken before a TCG
+#     boot finished.
+import inspect as _inspect
+ensure_src = _inspect.getsource(panel._omega_bot_ensure_sshx)
+check("sshx step repairs guest DNS before downloading",
+      "resolved.conf.d" in ensure_src and "nameserver 1.1.1.1" in ensure_src, "")
+check("start/create hook repairs guest DNS",
+      "resolved.conf.d" in _inspect.getsource(panel._lxc_fix_networking), "")
+wait_src = _inspect.getsource(panel._omega_wait_guest_ssh)
+check("non-kvm boot wait is patient and reports progress",
+      "timeout=420" in wait_src and "report(" in wait_src, "")
+check("non-kvm boot wait shows the console tail on failure",
+      "Console tail" in wait_src, "")
+check("sshx job waits for a non-kvm boot",
+      "OMEGA_NONKVM_SSH_WAIT" in _inspect.getsource(panel._omega_start_sshx_job), "")
+check("create flow keeps sshx progress inside 92-99%",
+      "92 + int(" in _inspect.getsource(panel._create_vps_for_user), "")
+
 print()
 if failures:
     print("FAILURES:", len(failures))
