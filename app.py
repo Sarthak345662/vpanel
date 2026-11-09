@@ -16981,11 +16981,8 @@ while true; do
     if [ "$fixtried" = 0 ] && printf '%s' "$err" | grep -q 'Permission denied'; then
       fixtried=1
       printf '\n\033[33m[Vizion] Guest refuses the password (old boot config). Rebuilding it and rebooting the guest once...\033[0m\n'
-      fixout=$("$NONKVM" fixssh --name __NAME__ 2>&1)
+      fixout=$(bash __FIXSH__ 2>&1)
       printf '%s\n' "$fixout" | tail -n 4 | cut -c1-100
-      case "$fixout" in
-        *"Unknown action"*) printf '\033[31m[Vizion] scripts/omega-nonkvm.sh on the server is old. Push the new file and run the --update command.\033[0m\n' ;;
-      esac
       started=$(date +%s)
     fi
     sleep 3
@@ -17009,12 +17006,76 @@ done
                   .replace("__STATEENV__", shlex.quote(os.path.join(state_dir, "state.env")))
                   .replace("__NONKVM__", shlex.quote(os.path.join(
                       os.path.dirname(os.path.abspath(__file__)), "scripts", "omega-nonkvm.sh")))
+                  .replace("__FIXSH__", shlex.quote(os.path.join(state_dir, "sshx-fix.sh")))
                   .replace("__NAME__", shlex.quote(str(name)))
                   .replace("__PORT__", str(int(port)))
                   .replace("__SSH__", shlex.quote(ssh)))
     with open(shell_path, "w", encoding="utf-8") as handle:
         handle.write(shell_text)
     os.chmod(shell_path, 0o700)
+
+    # Self-contained repair for guests whose first boot config was rejected by
+    # cloud-init (root password never set -> "Permission denied (publickey)").
+    # It does not depend on the installed omega-nonkvm.sh version.
+    fix_path = os.path.join(state_dir, "sshx-fix.sh")
+    fix_text = r"""#!/bin/bash
+D=__DIR__
+NAME=__NAME__
+NONKVM=__NONKVM__
+PW=$(grep '^SSH_PASSWORD=' "$D/state.env" | tail -n1 | cut -d= -f2-)
+[ -n "$PW" ] || { echo "No SSH password recorded for $NAME"; exit 1; }
+command -v cloud-localds >/dev/null 2>&1 || { echo "cloud-localds is missing (apt-get install cloud-image-utils)"; exit 1; }
+cat > "$D/user-data" <<EOF
+#cloud-config
+hostname: ${NAME}
+disable_root: false
+ssh_pwauth: true
+users:
+  - name: root
+    lock_passwd: false
+    plain_text_passwd: "${PW}"
+chpasswd:
+  expire: false
+  users:
+    - {name: root, password: "${PW}", type: text}
+write_files:
+  - path: /etc/ssh/sshd_config.d/00-vizion.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication yes
+      PermitRootLogin yes
+      KbdInteractiveAuthentication yes
+package_update: false
+package_upgrade: false
+runcmd:
+  - |
+    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+    sed -i 's/^PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+EOF
+cat > "$D/meta-data" <<EOF
+instance-id: iid-${NAME}-$(date +%s)
+local-hostname: ${NAME}
+EOF
+cloud-localds "$D/seed.iso" "$D/user-data" "$D/meta-data" || exit 1
+pid=$(cat "$D/qemu.pid" 2>/dev/null)
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  kill "$pid" 2>/dev/null
+  for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -9 "$pid" 2>/dev/null
+  rm -f "$D/qemu.pid"
+fi
+sed -i '/^SSHFIX=/d' "$D/state.env" 2>/dev/null
+echo "SSHFIX=3" >> "$D/state.env"
+bash "$NONKVM" start --name "$NAME"
+"""
+    fix_text = (fix_text.replace("__DIR__", shlex.quote(state_dir))
+                .replace("__NAME__", shlex.quote(str(name)))
+                .replace("__NONKVM__", shlex.quote(os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "scripts", "omega-nonkvm.sh"))))
+    with open(fix_path, "w", encoding="utf-8") as handle:
+        handle.write(fix_text)
+    os.chmod(fix_path, 0o700)
 
     log_path = os.path.join(state_dir, "sshx-bridge.log")
     open(log_path, "w").close()
@@ -17030,7 +17091,7 @@ done
             conn.close()
     except Exception:
         site_name = ""
-    title = ("%s | %s" % (site_name or "Vizion Panel", name))[:60]
+    title = ("root@%s" % name)[:60]
     script_bin = shutil.which("script")
     env = dict(os.environ)
     env["HOME"] = env.get("HOME") or "/var/lib/omega-panel"
