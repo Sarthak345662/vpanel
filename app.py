@@ -16963,6 +16963,8 @@ export SSH_ASKPASS_REQUIRE=force
 export DISPLAY="${DISPLAY:-:0}"
 export TERM=xterm-256color
 CON=__CONSOLE__
+STATE=__STATEENV__
+NONKVM=__NONKVM__
 OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no
       -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o ConnectTimeout=100
       -o LogLevel=ERROR -o ServerAliveInterval=30 -p __PORT__)
@@ -16975,6 +16977,11 @@ while true; do
   TAILPID=$!
   n=0
   until err=$("$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null 2>&1); do
+    if printf '%s' "$err" | grep -q 'Permission denied' && ! grep -q '^SSHFIX=3' "$STATE" 2>/dev/null; then
+      printf '\n\033[33m[Vizion] Guest refuses the password (old boot config). Rebuilding it and rebooting the guest once...\033[0m\n'
+      "$NONKVM" fixssh --name __NAME__ >/dev/null 2>&1
+      started=$(date +%s)
+    fi
     sleep 3
     n=$((n+1))
     if [ $((n % 5)) -eq 0 ]; then
@@ -16993,6 +17000,10 @@ done
 """
     shell_text = (shell_text.replace("__ASKPASS__", shlex.quote(askpass))
                   .replace("__CONSOLE__", shlex.quote(os.path.join(state_dir, "console.log")))
+                  .replace("__STATEENV__", shlex.quote(os.path.join(state_dir, "state.env")))
+                  .replace("__NONKVM__", shlex.quote(os.path.join(
+                      os.path.dirname(os.path.abspath(__file__)), "scripts", "omega-nonkvm.sh")))
+                  .replace("__NAME__", shlex.quote(str(name)))
                   .replace("__PORT__", str(int(port)))
                   .replace("__SSH__", shlex.quote(ssh)))
     with open(shell_path, "w", encoding="utf-8") as handle:
