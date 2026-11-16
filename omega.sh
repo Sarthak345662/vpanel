@@ -669,7 +669,7 @@ create_panel_user() {
 
     local out rc update_mode=0 answer
     _omega_run_user_py() {
-        (cd "$INSTALL_DIR" && OMEGA_USER_UPDATE="$update_mode" OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
+        (cd "$INSTALL_DIR" && { set -a; [[ -r /etc/omega-panel/omega.env ]] && . /etc/omega-panel/omega.env; set +a; true; } && OMEGA_USER_UPDATE="$update_mode" OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
 import json
 import secrets
 import sys
@@ -747,6 +747,8 @@ PY
         fi
     fi
     [[ $rc -eq 0 ]] || { echo "$out"; die "User creation failed."; }
+    # keep the DB files owned like the data dir so the panel service can still write them
+    chown --reference=/var/lib/omega-panel /var/lib/omega-panel/omega.db* 2>/dev/null || true
 
     echo
     ok "Panel user saved"
