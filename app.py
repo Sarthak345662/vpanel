@@ -90,39 +90,70 @@ def _omega_guest_eth0_ip(name):
 
 
 def _omega_lxc_net_info(name):
-    """Bridge subnet and gateway used by the guest, best effort."""
+    """Bridge subnet and gateway used by the guest, best effort.
+
+    The guest's NIC usually comes from the *profile*, so the instance-local
+    config does not name the bridge; ask for the expanded config, then fall
+    back to every managed bridge Incus knows about, and finally to the
+    address the host itself has on an unmanaged parent bridge.
+    """
     import subprocess as _sp
-    bridge = ""
-    try:
-        cfg = _sp.run(['incus', 'config', 'show', name],
-                      capture_output=True, timeout=15).stdout.decode("utf-8", "ignore")
-        found = re.search(r"^\s*network:\s*(\S+)\s*$", cfg, re.M)
-        if found:
-            bridge = found.group(1)
-    except Exception:
-        pass
-    for candidate in ([bridge] if bridge else []) + ["incusbr0", "lxdbr0"]:
+
+    def run(args, timeout=10):
         try:
-            addr = _sp.run(['incus', 'network', 'get', candidate, 'ipv4.address'],
-                           capture_output=True,
-                           timeout=10).stdout.decode("utf-8", "ignore").strip()
+            return _sp.run(args, capture_output=True,
+                           timeout=timeout).stdout.decode("utf-8", "ignore").strip()
         except Exception:
-            continue
+            return ""
+
+    candidates = []
+    cfg = run(['incus', 'config', 'show', '--expanded', name], 15)
+    for found in re.finditer(r"^\s*(?:network|parent):\s*(\S+)\s*$", cfg, re.M):
+        if found.group(1) not in candidates:
+            candidates.append(found.group(1))
+    listing = run(['incus', 'network', 'list', '--format', 'csv'], 10)
+    for line in listing.splitlines():
+        cols = line.split(",")
+        if len(cols) >= 3 and cols[1].strip() == "bridge" \
+                and cols[2].strip().upper() == "YES" and cols[0] not in candidates:
+            candidates.append(cols[0].strip())
+    for extra in ("incusbr0", "lxdbr0"):
+        if extra not in candidates:
+            candidates.append(extra)
+    for candidate in candidates:
+        addr = run(['incus', 'network', 'get', candidate, 'ipv4.address'])
+        gateway = run(['incus', 'network', 'get', candidate, 'ipv4.gateway'])
         if not addr or "/" not in addr or addr.lower().startswith("none"):
-            continue
-        gateway = ""
-        try:
-            gateway = _sp.run(['incus', 'network', 'get', candidate, 'ipv4.gateway'],
-                              capture_output=True,
-                              timeout=10).stdout.decode("utf-8", "ignore").strip()
-        except Exception:
-            pass
+            # Unmanaged bridge (or "auto"): read the host's own address on it.
+            host = run(['ip', '-4', '-o', 'addr', 'show', 'dev', candidate])
+            found = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", host)
+            if not found:
+                continue
+            addr = "%s/%s" % (found.group(1), found.group(2))
         net, _, prefix = addr.partition("/")
         if not gateway or gateway in ("auto", "none"):
             gateway = net
         return {"bridge": candidate, "net": net,
                 "prefix": prefix or "24", "gateway": gateway}
     return {}
+
+
+def _omega_incus_bridge_enable_dhcp(info):
+    """Turn DHCP and NAT back on for a managed bridge that has them disabled."""
+    import subprocess as _sp
+    bridge = (info or {}).get("bridge")
+    if not bridge:
+        return
+    for key in ("ipv4.dhcp", "ipv4.nat"):
+        try:
+            cur = _sp.run(['incus', 'network', 'get', bridge, key],
+                          capture_output=True, timeout=10).stdout.decode().strip().lower()
+            if cur == "false":
+                _sp.run(['incus', 'network', 'set', bridge, key, 'true'],
+                        capture_output=True, timeout=20)
+                app.logger.info("Enabled %s on Incus network %s", key, bridge)
+        except Exception:
+            pass
 
 
 def _lxc_fix_networking(name, budget=120):
@@ -148,6 +179,10 @@ def _lxc_fix_networking(name, budget=120):
                                capture_output=True, timeout=timeout)
             except Exception:
                 return None
+
+        # 0. A bridge with DHCP/NAT switched off can never give the guest an address.
+        if not _omega_guest_eth0_ip(name):
+            _omega_incus_bridge_enable_dhcp(_omega_lxc_net_info(name))
 
         # 1. Bring the link up and ask for a lease, whichever client exists.
         if not _omega_guest_eth0_ip(name):
@@ -1028,6 +1063,10 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
         <a href="/nodes" class="sidebar-link {{ 'active' if active_page == 'nodes' }}">
             <svg width="18" height="18"><use href="#icon-cpu"/></svg>
             Nodes
+        </a>
+        <a href="/admin/integrations#wallpaper" class="sidebar-link">
+            <svg width="18" height="18"><use href="#icon-settings"/></svg>
+            Background &amp; Integrations
         </a>
     </div>
     <div class="sidebar-section">
@@ -8464,42 +8503,36 @@ ubuntu-26.04    # Ubuntu 26.04</div>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>{{ vps['container_name'] }} &mdash; Terminal</title>
     <link rel="icon" href="/logo">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { height: 100%; background: #040208; overflow: hidden; }
-        #terminal-background { position: fixed; inset: 0; background:
-            radial-gradient(ellipse 80% 55% at 50% -10%, rgba(255,255,255,.05), transparent 60%),
-            radial-gradient(ellipse 70% 50% at 30% 110%, rgba(168,85,247,.06), transparent 60%),
-            radial-gradient(ellipse 60% 45% at 75% 120%, rgba(236,72,153,.05), transparent 60%),
-            #040208; }
-        #terminal-container { position: relative; z-index: 2; height: calc(100% - 64px); padding: 10px; }
-        #terminal-topbar { position: relative; z-index: 3; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: rgba(12,8,20,.7); backdrop-filter: blur(8px); border-top: 1px solid #251a33; }
+        body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+        #terminal-topbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: rgba(12,8,20,.9); border-bottom: 1px solid #251a33; }
         #terminal-topbar .tt-icon { width: 18px; height: 18px; display: inline-block; background: linear-gradient(135deg,#a855f7,#34d399); border-radius: 5px; }
         #terminal-topbar .tt-title { font: 600 12px/1 Inter, sans-serif; color: #e9d5ff; letter-spacing: .3px; }
-        #terminal-topbar .tt-status { margin-left: auto; font: 500 11px/1 Inter, sans-serif; color: #9ca3af; }
-        #terminal-topbar .tt-status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #34d399; box-shadow: 0 0 6px #34d399; margin-right: 5px; vertical-align: middle; }
-        #mobile-keys { position: fixed; left: 0; right: 0; bottom: 0; display: flex; gap: 6px; padding: 8px; background: rgba(14,10,23,.96); border-top: 1px solid #2b2140; overflow-x: auto; z-index: 10; }
-        #mobile-keys button { flex: 1 0 auto; min-width: 54px; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a2d55; background: #1a1428; color: #f7f3ff; font: 600 13px/1 Inter, sans-serif; }
+        #terminal-topbar .tt-status { margin-left: auto; font: 500 11px/1 Inter, sans-serif; color: #9ca3af; display: flex; align-items: center; }
+        #terminal-topbar .tt-status .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 6px #fbbf24; margin-right: 6px; }
+        #terminal-container { flex: 1 1 auto; min-height: 0; padding: 8px; background: #000; }
+        #terminal-container .xterm { height: 100%; }
+        #terminal-error { flex: 0 0 auto; color: #fbbf24; font: 600 13px/1.4 Inter, sans-serif; padding: 8px 12px; background: #1a1205; }
+        #mobile-keys { flex: 0 0 auto; display: flex; gap: 6px; padding: 8px; background: rgba(14,10,23,.96); border-top: 1px solid #2b2140; overflow-x: auto; }
+        #mobile-keys button { flex: 1 0 auto; min-width: 54px; padding: 10px 12px; border-radius: 8px; border: 1px solid #3a2d55; background: #1a1428; color: #f7f3ff; font: 600 13px/1 Inter, sans-serif; cursor: pointer; }
         #mobile-keys button:active { background: #2b2140; }
         #mobile-keys button.danger { background: #7f1d1d; border-color: #b91c1c; }
-        #terminal-error { position: relative; z-index: 3; color: #fbbf24; font: 600 13px/1.4 Inter, sans-serif; padding: 8px 10px; }
-        #xterm-hint { position: relative; z-index: 3; color: #9ca3af; font: 11px/1.4 Inter, sans-serif; text-align: center; padding: 8px; }
     </style>
 </head>
 <body>
-    <div id="terminal-background"></div>
     <div id="terminal-topbar">
         <span class="tt-icon"></span>
         <span class="tt-title">{{ vps['container_name'] }}</span>
-        <span class="tt-status"><span class="dot"></span>Connected</span>
+        <span class="tt-status"><span class="dot" id="tt-dot"></span><span id="tt-label">Connecting...</span></span>
     </div>
     <div id="terminal-container"></div>
     <div id="terminal-error" style="display:none"></div>
-    <div id="xterm-hint" style="display:none">Terminal scripts are loading. If this stays white, open the browser console (F12) and tell the admin what errors appear.</div>
     <div id="mobile-keys">
         <button type="button" data-key="tab">Tab</button>
         <button type="button" data-key="esc">Esc</button>
@@ -8510,182 +8543,255 @@ ubuntu-26.04    # Ubuntu 26.04</div>
     </div>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-    <script>        (function() {
-            var errorBox = document.getElementById('terminal-error');
-            var hintBox = document.getElementById('xterm-hint');
-            function showError(msg) {
-                errorBox.textContent = 'Terminal error: ' + msg;
-                errorBox.style.display = 'block';
-                if (hintBox) hintBox.style.display = 'block';
-                console.error('[omega-terminal]', msg);
+    <script>
+    (function() {
+        var VPS_ID = {{ vps['id'] }};
+        var API = '/api/vps/' + VPS_ID + '/terminal';
+        var errorBox = document.getElementById('terminal-error');
+        var dot = document.getElementById('tt-dot');
+        var label = document.getElementById('tt-label');
+
+        function setStatus(text, color) {
+            label.textContent = text;
+            dot.style.background = color;
+            dot.style.boxShadow = '0 0 6px ' + color;
+        }
+        function showError(msg) {
+            errorBox.textContent = 'Terminal error: ' + msg;
+            errorBox.style.display = 'block';
+            console.error('[terminal]', msg);
+        }
+        function clearError() { errorBox.style.display = 'none'; }
+
+        if (typeof Terminal === 'undefined') {
+            showError('xterm.js did not load (CDN blocked?). Check your internet / try another network or VPN.');
+            setStatus('Error', '#f87171');
+            return;
+        }
+
+        var term = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            scrollback: 5000,
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            theme: { background: '#000000', foreground: '#f0f0f0' }
+        });
+        var fitAddon = null;
+        if (typeof FitAddon !== 'undefined') {
+            fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+        }
+        var box = document.getElementById('terminal-container');
+        term.open(box);
+
+        function fit() { if (fitAddon) { try { fitAddon.fit(); } catch (e) {} } }
+        function focusTerm() { try { term.focus(); } catch (e) {} }
+        box.addEventListener('pointerdown', focusTerm);
+        box.addEventListener('click', focusTerm);
+        fit();
+        focusTerm();
+
+        var ESC = String.fromCharCode(27);
+        var KEYS = {
+            'tab': String.fromCharCode(9),
+            'esc': ESC,
+            'up': ESC + '[A',
+            'down': ESC + '[B',
+            'enter': String.fromCharCode(13),
+            'ctrl-c': String.fromCharCode(3)
+        };
+
+        var sessionId = null;
+        var source = null;
+        var gotData = false;
+        var failures = 0;
+        var retryTimer = null;
+        var wakeTimer = null;
+        var epoch = 0;
+
+        // ---- input: keep keystrokes in order (one request at a time) ----
+        var inputBuf = '';
+        var sending = false;
+        function sendInput(data) {
+            if (!data) return;
+            inputBuf += data;
+            flushInput();
+        }
+        function flushInput() {
+            if (sending || !sessionId || !inputBuf) return;
+            var chunk = inputBuf;
+            inputBuf = '';
+            sending = true;
+            var sid = sessionId;
+            fetch(API + '/input?session=' + encodeURIComponent(sid), {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain' },
+                body: chunk,
+                credentials: 'same-origin'
+            }).then(function(r) {
+                sending = false;
+                if (r.status === 404 || r.status === 410) {
+                    if (sid === sessionId) restartSession('Session ended, starting a new one...');
+                    return;
+                }
+                flushInput();
+            }).catch(function() {
+                sending = false;
+                inputBuf = chunk + inputBuf;
+                setTimeout(flushInput, 800);
+            });
+        }
+        term.onData(sendInput);
+
+        Array.prototype.forEach.call(document.querySelectorAll('#mobile-keys button'), function(b) {
+            b.addEventListener('click', function() {
+                sendInput(KEYS[b.getAttribute('data-key')] || '');
+                focusTerm();
+            });
+        });
+
+        // ---- resize ----
+        var resizeTimer = null;
+        function sendResize() {
+            if (!sessionId) return;
+            var dims = fitAddon ? fitAddon.proposeDimensions() : null;
+            if (!dims || !dims.cols || !dims.rows) return;
+            fetch(API + '/resize?session=' + encodeURIComponent(sessionId) + '&cols=' + dims.cols + '&rows=' + dims.rows,
+                  { method: 'POST', credentials: 'same-origin' }).catch(function() {});
+        }
+        function onResize() {
+            fit();
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(sendResize, 150);
+        }
+        window.addEventListener('resize', onResize);
+        if (window.ResizeObserver) { new ResizeObserver(onResize).observe(box); }
+
+        // ---- session / stream ----
+        function closeSource() {
+            if (source) { try { source.close(); } catch (e) {} source = null; }
+            clearTimeout(wakeTimer);
+        }
+
+        function scheduleRetry(fn, msg) {
+            failures++;
+            if (failures > 8) {
+                setStatus('Disconnected', '#f87171');
+                showError('Could not connect to the terminal. Refresh the page to try again. ' + (msg || ''));
+                return;
             }
-            try {
-                if (typeof Terminal === 'undefined') { showError('xterm.min.js did not load. Check the browser console for blocked CDN requests.'); return; }
-                if (typeof FitAddon === 'undefined') { showError('xterm addon-fit did not load. The terminal will still work but will not auto-fit the window.'); }
-            } catch(e) { showError('Terminal libraries could not be read: ' + e.message); return; }
-            try {
-                var term = new Terminal({ cursorBlink: true, fontSize: 14, fontFamily: 'Menlo, Monaco, "Courier New", monospace', theme: { background: '#000', foreground: '#f0f0f0' } });
-                var fitAddon = (typeof FitAddon !== 'undefined') ? new FitAddon.FitAddon() : null;
-                if (fitAddon) term.loadAddon(fitAddon);
-                term.open(document.getElementById('terminal-container'));
-                if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
-                var sessionId = null;
-                var reconnectTimer = null;
-                function showConnected() {
-                    var dot = document.querySelector('#terminal-topbar .tt-status .dot');
-                    var label = document.querySelector('#terminal-topbar .tt-status');
-                    if (dot) { dot.style.background = '#34d399'; dot.style.boxShadow = '0 0 6px #34d399'; }
-                    if (label) label.textContent = 'Connected';
-                }
-                function showDisconnected(msg) {
-                    var dot = document.querySelector('#terminal-topbar .tt-status .dot');
-                    var label = document.querySelector('#terminal-topbar .tt-status');
-                    if (dot) { dot.style.background = '#f87171'; dot.style.boxShadow = '0 0 6px #f87171'; }
-                    if (label) label.textContent = msg ? 'Disconnected' : 'Connecting...';
-                }
-                function sendResize() {
-                    if (!sessionId) return;
-                    var dims = fitAddon ? fitAddon.proposeDimensions() : null;
-                    if (!dims) return;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/resize?session=' + sessionId + '&cols=' + dims.cols + '&rows=' + dims.rows, { method: 'POST' })
-                        .catch(function(e) { console.warn('[omega-terminal] resize failed', e); });
-                }
-                function createSession() {
-                    showDisconnected(false);
-                    var dims = fitAddon ? fitAddon.proposeDimensions() : null;
-                    var cols = dims ? dims.cols : 80;
-                    var rows = dims ? dims.rows : 24;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/session?cols=' + cols + '&rows=' + rows, { method: 'POST' })
-                        .then(function(r) { return r.json(); })
-                        .then(function(data) {
-                            if (!data || !data.session_id) { showError('Server refused to start a terminal session: ' + (data && data.error ? data.error : 'no session_id')); showDisconnected(true); return; }
-                            sessionId = data.session_id;
-                            showConnected();
-                            connectStream();
-                            setTimeout(function() { sendResize(); }, 100);
-                        })
-                        .catch(function(err) {
-                            showError('Could not reach the terminal backend: ' + (err && err.message ? err.message : String(err)));
-                            showDisconnected(true);
-                            scheduleReconnect();
-                        });
-                }
-                function connectStream() {
-                    try {
-                        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-                        var evtSource = new EventSource('/api/vps/{{ vps['id'] }}/terminal/stream?session=' + sessionId);
-                        evtSource.onmessage = function(event) {
-                            if (event.data === '__TERMINAL_CLOSED__') {
-                                evtSource.close();
-                                showDisconnected(true);
-                                scheduleReconnect();
-                                return;
-                            }
-                            try {
-                                var bytes = Uint8Array.from(atob(event.data), function(c) { return c.charCodeAt(0); });
-                                term.write(bytes);
-                            } catch(e) {
-                                term.write(event.data);
-                            }
-                        };
-                        evtSource.onerror = function() {
-                            evtSource.close();
-                            showDisconnected(true);
-                            scheduleReconnect();
-                        };
-                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); scheduleReconnect(); }
-                }
-                var reconnectAttempts = 0;
-                var maxReconnectAttempts = 5;
-                function scheduleReconnect() {
-                    if (reconnectAttempts >= maxReconnectAttempts) {
-                        showError('Terminal connection could not be restored. Refresh the page to try again.');
+            setStatus('Reconnecting...', '#fbbf24');
+            var delay = Math.min(500 * Math.pow(2, failures - 1), 8000);
+            clearTimeout(retryTimer);
+            retryTimer = setTimeout(fn, delay);
+        }
+
+        function restartSession(msg) {
+            closeSource();
+            sessionId = null;
+            inputBuf = '';
+            if (msg) term.writeln(String.fromCharCode(13, 10) + ESC + '[33m[' + msg + ']' + ESC + '[0m');
+            clearTimeout(retryTimer);
+            retryTimer = setTimeout(createSession, 600);
+        }
+
+        function createSession() {
+            var myEpoch = ++epoch;
+            setStatus('Connecting...', '#fbbf24');
+            var dims = fitAddon ? fitAddon.proposeDimensions() : null;
+            var cols = (dims && dims.cols) ? dims.cols : 80;
+            var rows = (dims && dims.rows) ? dims.rows : 24;
+            fetch(API + '/session?cols=' + cols + '&rows=' + rows, { method: 'POST', credentials: 'same-origin' })
+                .then(function(r) {
+                    return r.text().then(function(t) {
+                        var data = null;
+                        try { data = JSON.parse(t); } catch (e) {}
+                        return { ok: r.ok, status: r.status, data: data, raw: t };
+                    });
+                })
+                .then(function(res) {
+                    if (myEpoch !== epoch) return;
+                    if (!res.data) {
+                        var hint = (res.status === 200 || res.status === 302) ? 'Login expired? Refresh and log in again.' : ('HTTP ' + res.status);
+                        showError('Server did not return a session (' + hint + ').');
+                        scheduleRetry(createSession, hint);
                         return;
                     }
-                    reconnectAttempts++;
-                    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000);
-                    showDisconnected(false);
-                    reconnectTimer = setTimeout(function() {
-                        reconnectAttempts++;
-                        createSession();
-                    }, delay);
-                }
-                function sendInput(data) {
-                    if (!sessionId || !data) return;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
-                        method: 'POST',
-                        body: data
-                    });
-                }
-                term.onData(sendInput);
-                var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
-                document.querySelectorAll('#mobile-keys button').forEach(function(button) {
-                    button.addEventListener('click', function() {
-                        sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
-                        term.focus();
-                    });
-                });
-                function onResize() {
-                    if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
-                    sendResize();
-                }
-                window.addEventListener('resize', onResize);
-                createSession();
-            } catch(e) {
-                showError('Terminal failed to initialize: ' + e.message);
-                showDisconnected(true);
-                scheduleReconnect();
-            }
-        })();</script>
-</body>
-</html>.close();
-                            showDisconnected(true);
-                            scheduleReconnect();
-                        };
-                    } catch(e) { showError('Could not open the terminal stream: ' + e.message); scheduleReconnect(); }
-                }
-                var reconnectAttempts = 0;
-                var maxReconnectAttempts = 5;
-                function scheduleReconnect() {
-                    if (reconnectAttempts >= maxReconnectAttempts) {
-                        showError('Terminal connection could not be restored. Refresh the page to try again.');
+                    if (!res.ok || !res.data.session_id) {
+                        showError(res.data.error || ('Server refused the session (HTTP ' + res.status + ')'));
+                        scheduleRetry(createSession, res.data.error || '');
                         return;
                     }
-                    reconnectAttempts++;
-                    var delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 10000);
-                    showDisconnected(false);
-                    reconnectTimer = setTimeout(function() {
-                        reconnectAttempts++;
-                        createSession();
-                    }, delay);
-                }
-                function sendInput(data) {
-                    if (!sessionId || !data) return;
-                    fetch('/api/vps/{{ vps['id'] }}/terminal/input?session=' + sessionId, {
-                        method: 'POST',
-                        body: data
-                    });
-                }
-                term.onData(sendInput);
-                var KEY_SEQUENCES = { tab: '\t', esc: '\u001b', up: '\u001b[A', down: '\u001b[B', enter: '\r', 'ctrl-c': '\u0003' };
-                document.querySelectorAll('#mobile-keys button').forEach(function(button) {
-                    button.addEventListener('click', function() {
-                        sendInput(KEY_SEQUENCES[this.getAttribute('data-key')] || '');
-                        term.focus();
-                    });
+                    clearError();
+                    sessionId = res.data.session_id;
+                    gotData = false;
+                    connectStream(0);
+                })
+                .catch(function(err) {
+                    if (myEpoch !== epoch) return;
+                    showError('Could not reach the panel: ' + (err && err.message ? err.message : err));
+                    scheduleRetry(createSession, '');
                 });
-                function onResize() {
-                    if (fitAddon) { try { fitAddon.fit(); } catch(e) {} }
-                    sendResize();
+        }
+
+        function connectStream(streamFails) {
+            closeSource();
+            if (!sessionId) return;
+            var sid = sessionId;
+            var es = new EventSource(API + '/stream?session=' + encodeURIComponent(sid));
+            source = es;
+
+            es.onopen = function() {
+                if (es !== source) return;
+                setStatus('Connected', '#34d399');
+                sendResize();
+                focusTerm();
+                flushInput();
+                // Nudge the shell so a prompt shows even if nothing was printed yet.
+                clearTimeout(wakeTimer);
+                wakeTimer = setTimeout(function() {
+                    if (!gotData && sid === sessionId) sendInput(String.fromCharCode(13));
+                }, 1500);
+            };
+
+            es.onmessage = function(ev) {
+                if (es !== source) return;
+                if (ev.data === '__TERMINAL_CLOSED__') {
+                    closeSource();
+                    failures = 0;
+                    restartSession('Shell closed, starting a new session');
+                    return;
                 }
-                window.addEventListener('resize', onResize);
-                createSession();
-            } catch(e) {
-                showError('Terminal failed to initialize: ' + e.message);
-                showDisconnected(true);
-                scheduleReconnect();
-            }
-        })();</script>
+                gotData = true;
+                failures = 0;
+                try {
+                    var bin = atob(ev.data);
+                    var bytes = new Uint8Array(bin.length);
+                    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    term.write(bytes);
+                } catch (e) {
+                    term.write(ev.data);
+                }
+            };
+
+            es.onerror = function() {
+                if (es !== source) return;
+                closeSource();
+                if (streamFails >= 2) {
+                    // The old session is probably gone: start a fresh one.
+                    restartSession('Connection lost, starting a new session');
+                    return;
+                }
+                setStatus('Reconnecting...', '#fbbf24');
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(function() { connectStream(streamFails + 1); }, 1000 * (streamFails + 1));
+            };
+        }
+
+        window.addEventListener('beforeunload', function() { closeSource(); });
+        createSession();
+    })();
+    </script>
 </body>
 </html>"""}}
 EMBEDDED_CSS = """@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -11059,6 +11165,30 @@ def vps_detail(vps_id):
                 container_status = 'not_found'
     return render_template('vps_detail.html', vps=vps, node_name=(node['name'] if node else ''), node_id=(node['id'] if node else ''), container_status=container_status, snapshots=snapshots, shares=shares, shared_by=shared_by, is_owner=is_owner)
 terminal_sessions = {}
+_TERMINAL_IDLE_SECONDS = 180
+def _terminal_kill_session(session_id):
+    sess = terminal_sessions.pop(session_id, None)
+    if not sess:
+        return
+    try:
+        sess['proc'].terminate()
+    except Exception:
+        pass
+def _terminal_reaper():
+    """Kill shells whose browser tab went away (no stream attached for a while)."""
+    while True:
+        time.sleep(30)
+        now = time.time()
+        for sid, sess in list(terminal_sessions.items()):
+            detached = sess.get('detached_at')
+            if detached and now - detached > _TERMINAL_IDLE_SECONDS:
+                _terminal_kill_session(sid)
+_terminal_reaper_started = False
+def _terminal_start_reaper():
+    global _terminal_reaper_started
+    if not _terminal_reaper_started:
+        _terminal_reaper_started = True
+        threading.Thread(target=_terminal_reaper, name="terminal-reaper", daemon=True).start()
 @app.route('/vps/<int:vps_id>/terminal')
 @login_required
 def vps_terminal(vps_id):
@@ -11115,7 +11245,8 @@ def terminal_create_session(vps_id):
     os.close(slave_fd)
     session_id = str(uuid.uuid4())
     terminal_sessions[session_id] = {'master_fd': master_fd, 'proc': proc, 'vps_id': vps_id,
-                                     'askpass': askpass_path}
+                                     'askpass': askpass_path, 'gen': 0, 'detached_at': time.time()}
+    _terminal_start_reaper()
     def _cleanup():
         proc.wait()
         time.sleep(0.3)
@@ -11218,28 +11349,39 @@ def terminal_stream(vps_id):
             return jsonify({'error': str(exc)[:200]}), 502
         def proxy_stream():
             try:
-                for chunk in r.iter_content(chunk_size=4096):
+                for chunk in r.iter_content(chunk_size=None):
                     if chunk:
-                        yield chunk.decode(errors='replace')
+                        yield chunk
             except Exception:
                 app.logger.exception("Remote terminal stream interrupted for VPS %s", vps_id)
             finally:
                 r.close()
         resp = Response(proxy_stream(), mimetype='text/event-stream')
-        resp.headers['Cache-Control'] = 'no-cache'
+        resp.headers['Cache-Control'] = 'no-cache, no-transform'
         resp.headers['X-Accel-Buffering'] = 'no'
         return resp
     session_id = request.args.get('session')
     sess = terminal_sessions.get(session_id)
     if not sess:
         return (jsonify({'error': 'session not found'}), 404)
+    sess['gen'] = sess.get('gen', 0) + 1
+    my_gen = sess['gen']
+    sess['detached_at'] = None
     def generate():
         mfd = sess['master_fd']
         proc = sess['proc']
         last_keepalive = time.time()
-        while True:
-            timeout = max(0, 15 - (time.time() - last_keepalive))
-            r, _, _ = select.select([mfd], [], [], timeout)
+        # Padding comment makes proxies (Cloudflare/nginx) flush the headers right away.
+        yield ': ' + (' ' * 2048) + '\n\n'
+        try:
+          while True:
+            if sess.get('gen') != my_gen:
+                return
+            timeout = max(0, min(1, 15 - (time.time() - last_keepalive)))
+            try:
+                r, _, _ = select.select([mfd], [], [], timeout)
+            except (OSError, ValueError):
+                break
             if r:
                 try:
                     data = os.read(mfd, 4096)
@@ -11259,8 +11401,14 @@ def terminal_stream(vps_id):
             if time.time() - last_keepalive >= 15:
                 yield ': keepalive\n\n'
                 last_keepalive = time.time()
-        yield 'data: __TERMINAL_CLOSED__\n\n'
-    return Response(generate(), mimetype='text/event-stream')
+          yield 'data: __TERMINAL_CLOSED__\n\n'
+        finally:
+            if sess.get('gen') == my_gen:
+                sess['detached_at'] = time.time()
+    resp = Response(generate(), mimetype='text/event-stream')
+    resp.headers['Cache-Control'] = 'no-cache, no-transform'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    return resp
 @app.route('/schedules')
 @login_required
 def schedules():
@@ -14986,6 +15134,8 @@ def _omega_columns():
             ("bot_banner_url", "TEXT DEFAULT ''"), ("bot_logo_url", "TEXT DEFAULT ''"),
             ("bot_banner_path", "TEXT DEFAULT ''"), ("bot_logo_path", "TEXT DEFAULT ''"),
             ("panel_public_url", "TEXT DEFAULT ''"),
+            ("bg_image_url", "TEXT DEFAULT ''"), ("bg_image_path", "TEXT DEFAULT ''"),
+            ("bg_dim", "INTEGER DEFAULT 45"), ("bg_blur", "INTEGER DEFAULT 14"),
             ("health_interval_seconds", "INTEGER DEFAULT 86400"),
             ("health_alert_discord_id", "TEXT DEFAULT ''"),
         ],
@@ -15137,6 +15287,47 @@ def omega_apply_global_font(response):
                 response.set_data(body.replace("</head>", "<style>" + css + "</style></head>", 1))
             except Exception:
                 pass
+    return response
+
+
+def _omega_wallpaper_css(s):
+    url = (s.get("bg_image_path") or s.get("bg_image_url") or "").strip()
+    if not (url.startswith("https://") or url.startswith("/static/uploads/")):
+        return ""
+    url = re.sub(r"[^A-Za-z0-9\-._~:/?#\[\]@!$&*+,;=%]", "", url)
+    try:
+        dim = max(0, min(90, int(s.get("bg_dim") if s.get("bg_dim") is not None else 45)))
+        blur = max(0, min(30, int(s.get("bg_blur") if s.get("bg_blur") is not None else 14)))
+    except (TypeError, ValueError):
+        dim, blur = 45, 14
+    alpha = dim / 100.0
+    glass = "backdrop-filter:blur(%dpx) saturate(1.15);-webkit-backdrop-filter:blur(%dpx) saturate(1.15);" % (blur, blur)
+    return (
+        "html{background:#05030a !important}"
+        "body{background:linear-gradient(rgba(0,0,0,%(a).2f),rgba(0,0,0,%(a).2f)),url(\"%(u)s\") center/cover fixed no-repeat !important}"
+        ".hero-bg,.hero-grid{background:transparent !important}"
+        ".app-layout,.main-content{background:transparent !important}"
+        ".sidebar{background:color-mix(in srgb,var(--bg-elevated) 38%%,transparent) !important;" + glass + "}"
+        ".sidebar-logo,.sidebar-footer{border-color:rgba(255,255,255,.08) !important}"
+        ".sidebar-link{background:color-mix(in srgb,var(--bg-card) 22%%,transparent) !important;margin:2px 10px;border-radius:9px;padding-left:12px !important;padding-right:12px !important}"
+        ".sidebar-link:hover{background:color-mix(in srgb,var(--bg-hover) 70%%,transparent) !important}"
+        ".sidebar-link.active{background:color-mix(in srgb,var(--accent) 80%%,transparent) !important;border-radius:9px !important}"
+        ".topbar{background:color-mix(in srgb,var(--bg-elevated) 40%%,transparent) !important;" + glass + "}"
+        ".card,.vps-card,.stat-card,.auth-card,.modal,.panel,.metric,[class$='-card']{background:color-mix(in srgb,var(--bg-card) 52%%,transparent) !important;" + glass + "}"
+    ) % {"a": alpha, "u": url}
+
+
+@app.after_request
+def omega_apply_wallpaper(response):
+    try:
+        if response.mimetype == "text/html" and not response.direct_passthrough and response.status_code < 400:
+            css = _omega_wallpaper_css(_omega_settings_dict())
+            if css:
+                body = response.get_data(as_text=True)
+                if "</head>" in body:
+                    response.set_data(body.replace("</head>", "<style id=\"omega-wallpaper\">" + css + "</style></head>", 1))
+    except Exception:
+        app.logger.debug("wallpaper injection failed", exc_info=True)
     return response
 
 
@@ -15367,6 +15558,31 @@ def omega_integrations_settings():
                 values[column] = "/static/uploads/" + filename
                 # The uploaded local asset takes precedence over any previously saved remote URL.
                 values["bot_banner_url" if column == "bot_banner_path" else "bot_logo_url"] = ""
+        # Panel wallpaper (shown behind the whole panel, sidebar and cards turn glassy).
+        bg_url = (request.form.get("bg_image_url") or "").strip()
+        values["bg_image_url"] = bg_url if bg_url.startswith("https://") else ""
+        values["bg_image_path"] = s["bg_image_path"] if "bg_image_path" in s.keys() else ""
+        try:
+            values["bg_dim"] = max(0, min(90, int(request.form.get("bg_dim", 45))))
+            values["bg_blur"] = max(0, min(30, int(request.form.get("bg_blur", 14))))
+        except ValueError:
+            values["bg_dim"], values["bg_blur"] = 45, 14
+        bg_file = request.files.get("bg_image_file")
+        if bg_file and bg_file.filename:
+            raw = bg_file.read(8 * 1024 * 1024 + 1)
+            if len(raw) > 8 * 1024 * 1024:
+                flash("Wallpaper must be 8 MB or smaller.", "error"); return redirect(url_for("omega_integrations_settings"))
+            sigs = {b"\x89PNG\r\n\x1a\n": ".png", b"\xff\xd8\xff": ".jpg", b"GIF87a": ".gif", b"GIF89a": ".gif", b"RIFF": ".webp"}
+            bg_ext = next((v for sig, v in sigs.items() if raw.startswith(sig)), None)
+            if not bg_ext or (bg_ext == ".webp" and raw[8:12] != b"WEBP"):
+                flash("Upload a valid PNG, JPG, GIF or WebP wallpaper.", "error"); return redirect(url_for("omega_integrations_settings"))
+            bg_dir = os.path.join(app.root_path, "static", "uploads"); os.makedirs(bg_dir, exist_ok=True)
+            bg_name = f"omega_wallpaper_{uuid.uuid4().hex}{bg_ext}"
+            with open(os.path.join(bg_dir, bg_name), "wb") as out: out.write(raw)
+            values["bg_image_path"] = "/static/uploads/" + bg_name
+            values["bg_image_url"] = ""
+        if request.form.get("bg_remove"):
+            values["bg_image_url"] = ""; values["bg_image_path"] = ""
         columns = list(values.keys()) + ["smtp_port", "smtp_tls", "smtp_ssl", "health_interval_seconds"]
         update_values = [values[k] for k in values] + [values["smtp_port"], values["smtp_tls"], values["smtp_ssl"], values["health_interval_seconds"]]
         conn = get_db(); conn.execute("UPDATE settings SET " + ",".join(f"{c}=?" for c in columns) + " WHERE id=?", update_values + [s["id"]]); conn.commit(); conn.close()
@@ -15383,6 +15599,9 @@ def omega_integrations_settings():
 OMEGA_INTEGRATIONS_HTML = r'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Vizion integrations</title>
 <style>body{margin:0;background:#0b1220;color:#e7edf5;font:14px system-ui}main{max-width:1000px;margin:32px auto;padding:20px}.card{background:#121d2d;border:1px solid #26364a;border-radius:14px;padding:20px;margin:16px 0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}label{display:block;margin:10px 0 5px;color:#b7c5d6}input,textarea{box-sizing:border-box;width:100%;padding:10px;background:#0b1422;border:1px solid #34465d;border-radius:8px;color:#fff}textarea{min-height:130px}button{padding:11px 18px;border:0;border-radius:8px;background:#46b5e8;color:#07111b;font-weight:700;cursor:pointer}.hint{color:#9fb0c4;font-size:12px}.check{display:flex;gap:8px;align-items:center}.check input{width:auto}</style></head><body><main><h1>Vizion Panel · Integrations & Monitoring</h1><p><a href="/admin/env-editor" style="color:#6ccfff">Open Discord .env editor →</a></p><p class="hint">All values below are saved in the panel SQLite database. Leave secret fields blank to keep the existing secret.</p>
 <form method="post" enctype="multipart/form-data">
+<section class="card" id="wallpaper"><h2>Panel background wallpaper</h2><p class="hint">The image is shown behind every page (dashboard, admin, login). The sidebar, buttons and cards become glass so the wallpaper shows through. Leave empty for the normal look.</p>
+<div class="grid"><div><label>Wallpaper URL (HTTPS)</label><input name="bg_image_url" value="{{settings.bg_image_url}}" placeholder="https://example.com/wallpaper.jpg"><label>Or upload wallpaper (PNG/JPG/WebP/GIF, max 8 MB)</label><input type="file" name="bg_image_file" accept="image/png,image/jpeg,image/gif,image/webp">{% if settings.bg_image_path %}<p class="hint">Current upload: {{settings.bg_image_path}}</p>{% endif %}<label class="check"><input type="checkbox" name="bg_remove"> Remove wallpaper</label></div>
+<div><label>Darkness over the image: <b id="bgdimv">{{settings.bg_dim if settings.bg_dim is not none else 45}}</b>%</label><input type="range" min="0" max="90" name="bg_dim" value="{{settings.bg_dim if settings.bg_dim is not none else 45}}" oninput="document.getElementById('bgdimv').textContent=this.value"><label>Glass blur behind sidebar and cards: <b id="bgblurv">{{settings.bg_blur if settings.bg_blur is not none else 14}}</b>px</label><input type="range" min="0" max="30" name="bg_blur" value="{{settings.bg_blur if settings.bg_blur is not none else 14}}" oninput="document.getElementById('bgblurv').textContent=this.value"></div></div></section>
 <section class="card"><h2>SMTP & HTML email template</h2><div class="grid">
 <div><label>SMTP Host</label><input name="smtp_host" value="{{settings.smtp_host}}"><label>SMTP Port</label><input type="number" name="smtp_port" value="{{settings.smtp_port or 587}}"></div>
 <div><label>SMTP Username</label><input name="smtp_username" value="{{settings.smtp_username}}"><label>SMTP Password (blank = unchanged)</label><input type="password" name="smtp_password" autocomplete="new-password"><label>From address</label><input name="smtp_from" value="{{settings.smtp_from}}"></div></div>
@@ -16713,6 +16932,363 @@ def fix_vps_ssh(vps_id):
     return redirect(url_for("vps_detail", vps_id=vps_id))
 
 
+# --- Non-KVM SSHX bridge ----------------------------------------------------
+# A software-emulated (no /dev/kvm) guest needs 10+ minutes before sshd answers,
+# so installing sshx INSIDE the guest made "Creating SSHX access" sit on the
+# SSH wait until it failed. The bridge runs sshx on the HOST instead: the link
+# exists in seconds and the terminal waits for the guest, shows boot progress,
+# then logs in automatically (and re-connects after a guest reboot).
+
+def _omega_host_sshx_bin():
+    """Path of an sshx binary on the panel host; downloads one when missing."""
+    import tarfile
+    import urllib.request
+    search = os.pathsep.join(["/usr/local/bin", "/usr/bin", "/var/lib/omega-panel/bin",
+                              os.path.expanduser("~/.local/bin"), os.environ.get("PATH", "")])
+    found = shutil.which("sshx", path=search)
+    if found:
+        return found
+    arch = {"x86_64": "x86_64", "amd64": "x86_64", "aarch64": "aarch64", "arm64": "aarch64"}.get(
+        os.uname().machine.lower(), "")
+    bindir = "/var/lib/omega-panel/bin"
+    try:
+        os.makedirs(bindir, exist_ok=True)
+    except OSError:
+        bindir = tempfile.gettempdir()
+    target = os.path.join(bindir, "sshx")
+    if arch:
+        url = "https://s3.amazonaws.com/sshx/sshx-%s-unknown-linux-musl.tar.gz" % arch
+        try:
+            archive = os.path.join(bindir, "sshx.tar.gz")
+            with urllib.request.urlopen(url, timeout=60) as resp, open(archive, "wb") as out:
+                shutil.copyfileobj(resp, out)
+            with tarfile.open(archive) as tar:
+                for member in tar.getmembers():
+                    if member.isfile() and os.path.basename(member.name) == "sshx":
+                        with tar.extractfile(member) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        os.chmod(target, 0o755)
+                        break
+            os.unlink(archive)
+            if os.path.isfile(target):
+                return target
+        except Exception:
+            app.logger.warning("Could not download sshx for the host", exc_info=True)
+    try:
+        env = dict(os.environ)
+        env["HOME"] = env.get("HOME") or "/var/lib/omega-panel"
+        subprocess.run(["sh", "-c", "curl -fsSL https://sshx.io/get | sh"], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
+    except Exception:
+        app.logger.warning("sshx get script failed on the host", exc_info=True)
+    return shutil.which("sshx", path=search) or ""
+
+
+def _omega_nonkvm_bridge_pid(name):
+    try:
+        with open(os.path.join(omega_nonkvm_state_dir(name), "sshx-bridge.pid"), encoding="utf-8") as handle:
+            return int(handle.read().strip() or 0)
+    except Exception:
+        return 0
+
+
+def _omega_nonkvm_bridge_alive(name):
+    pid = _omega_nonkvm_bridge_pid(name)
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _omega_nonkvm_bridge_stop(name):
+    import signal
+    pid = _omega_nonkvm_bridge_pid(name)
+    if pid <= 0:
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
+            pass
+    time.sleep(0.5)
+
+
+def _omega_nonkvm_write_fix_script(name):
+    """Write (and return the path of) the self-contained root-login repair script."""
+    state_dir = omega_nonkvm_state_dir(name)
+    os.makedirs(state_dir, exist_ok=True)
+    # Self-contained repair for guests whose first boot config was rejected by
+    # cloud-init (root password never set -> "Permission denied (publickey)").
+    # It does not depend on the installed omega-nonkvm.sh version.
+    fix_path = os.path.join(state_dir, "sshx-fix.sh")
+    fix_text = r"""#!/bin/bash
+D=__DIR__
+NAME=__NAME__
+NONKVM=__NONKVM__
+PW=$(grep '^SSH_PASSWORD=' "$D/state.env" | tail -n1 | cut -d= -f2-)
+[ -n "$PW" ] || { echo "No SSH password recorded for $NAME"; exit 1; }
+command -v cloud-localds >/dev/null 2>&1 || { echo "cloud-localds is missing (apt-get install cloud-image-utils)"; exit 1; }
+cat > "$D/user-data" <<EOF
+#cloud-config
+hostname: ${NAME}
+disable_root: false
+ssh_pwauth: true
+users:
+  - name: root
+    lock_passwd: false
+    plain_text_passwd: "${PW}"
+chpasswd:
+  expire: false
+  users:
+    - {name: root, password: "${PW}", type: text}
+write_files:
+  - path: /etc/ssh/sshd_config.d/00-vizion.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication yes
+      PermitRootLogin yes
+      KbdInteractiveAuthentication yes
+package_update: false
+package_upgrade: false
+runcmd:
+  - |
+    sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+    sed -i 's/^PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config.d/*.conf 2>/dev/null
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+EOF
+cat > "$D/meta-data" <<EOF
+instance-id: iid-${NAME}-$(date +%s)
+local-hostname: ${NAME}
+EOF
+cloud-localds "$D/seed.iso" "$D/user-data" "$D/meta-data" || exit 1
+pid=$(cat "$D/qemu.pid" 2>/dev/null)
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  kill "$pid" 2>/dev/null
+  for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+  kill -9 "$pid" 2>/dev/null
+  rm -f "$D/qemu.pid"
+fi
+sed -i '/^SSHFIX=/d' "$D/state.env" 2>/dev/null
+echo "SSHFIX=3" >> "$D/state.env"
+bash "$NONKVM" start --name "$NAME"
+"""
+    fix_text = (fix_text.replace("__DIR__", shlex.quote(state_dir))
+                .replace("__NAME__", shlex.quote(str(name)))
+                .replace("__NONKVM__", shlex.quote(os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "scripts", "omega-nonkvm.sh"))))
+    with open(fix_path, "w", encoding="utf-8") as handle:
+        handle.write(fix_text)
+    os.chmod(fix_path, 0o700)
+    return fix_path
+
+
+def _omega_nonkvm_wait_root_ready(name, port, password, fix_path, timeout=900, report=None):
+    """Block until root can log in to the Non-KVM guest over SSH.
+
+    The SSHX link is only handed out after this succeeds, so opening it lands
+    straight in a working root shell instead of an empty/waiting terminal. If the
+    guest refuses the password (old boot config) the repair script runs once.
+    Returns True when ready, False on timeout (the terminal then keeps retrying).
+    """
+    started = time.time()
+    deadline = started + max(10, int(timeout))
+    short_wait = int(timeout) < 120
+    fixed = False
+    last_report = 0.0
+    while time.time() < deadline:
+        try:
+            code, output = _omega_ssh_exec(port, password, "true", timeout=60)
+        except Exception as exc:
+            code, output = 255, str(exc)
+        if code == 0:
+            return True
+        text = output.decode("utf-8", errors="ignore") if isinstance(output, (bytes, bytearray)) else str(output or "")
+        if not fixed and "Permission denied" in text and os.path.exists(fix_path):
+            fixed = True
+            if report:
+                try:
+                    report(55, "Repairing root login (one guest reboot)\u2026")
+                except Exception:
+                    pass
+            try:
+                subprocess.run(["bash", fix_path], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=180)
+            except Exception:
+                app.logger.debug("sshx-fix.sh failed", exc_info=True)
+            started = time.time()
+            if not short_wait:
+                deadline = max(deadline, started + 420)
+        now = time.time()
+        if report and now - last_report >= 5:
+            last_report = now
+            elapsed = int(now - started)
+            pct = min(85, 50 + int(35 * min(1.0, elapsed / 300.0)))
+            try:
+                report(pct, "Waiting for the VPS to boot (%dm%02ds)\u2026" % (elapsed // 60, elapsed % 60))
+            except Exception:
+                pass
+        time.sleep(4)
+    return False
+
+
+def _omega_nonkvm_host_sshx(name, report=None, timeout=60):
+    """Start sshx on the host for a Non-KVM VPS and return its share link."""
+    def _step(percent, message):
+        if report is None:
+            return
+        try:
+            report(int(percent), str(message))
+        except Exception:
+            pass
+
+    password, port = _omega_nonkvm_credentials(name)
+    if not port:
+        raise RuntimeError("No SSH port is recorded for this Non-KVM VPS; start it once from the panel.")
+    ssh = shutil.which("ssh")
+    if not ssh:
+        raise RuntimeError("The ssh client is not installed on the panel host (apt-get install openssh-client).")
+    _step(45, "Preparing sshx on the panel host\u2026")
+    sshx = _omega_host_sshx_bin()
+    if not sshx:
+        raise RuntimeError(
+            "sshx is not installed on the panel host and could not be downloaded. "
+            "Run: curl -fsSL https://sshx.io/get | sudo sh   (or re-run the panel update command).")
+
+    state_dir = omega_nonkvm_state_dir(name)
+    os.makedirs(state_dir, exist_ok=True)
+    _omega_nonkvm_bridge_stop(name)
+
+    askpass = os.path.join(state_dir, "sshx-askpass.sh")
+    with open(askpass, "w", encoding="utf-8") as handle:
+        handle.write('#!/bin/sh\nprintf "%%s\\n" %s\n' % shlex.quote(str(password or "")))
+    os.chmod(askpass, 0o700)
+
+    shell_path = os.path.join(state_dir, "sshx-shell.sh")
+    shell_text = r"""#!/bin/bash
+# Generated by Vizion Panel - silent bridge: waits for the guest, then drops
+# straight into the root shell (no banner, no boot log).
+export SSH_ASKPASS=__ASKPASS__
+export SSH_ASKPASS_REQUIRE=force
+export DISPLAY="${DISPLAY:-:0}"
+export TERM=xterm-256color
+STATE=__STATEENV__
+NONKVM=__NONKVM__
+OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no
+      -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o ConnectTimeout=100
+      -o LogLevel=ERROR -o ServerAliveInterval=30 -p __PORT__)
+SSH=__SSH__
+fixtried=0
+while true; do
+  waited=0
+  until err=$("$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null 2>&1); do
+    if [ "$fixtried" = 0 ] && printf '%s' "$err" | grep -q 'Permission denied'; then
+      fixtried=1
+      bash __FIXSH__ >/dev/null 2>&1
+    fi
+    if [ "$waited" = 0 ]; then
+      printf '\r\nWaiting for the VPS to finish booting (this can take several minutes without KVM)...\r\n'
+      waited=1
+    fi
+    sleep 3
+  done
+  clear
+  "$SSH" -tt "${OPTS[@]}" root@127.0.0.1 'TERM=xterm-256color exec /bin/bash -l'
+  sleep 3
+done
+"""
+    shell_text = (shell_text.replace("__ASKPASS__", shlex.quote(askpass))
+                  .replace("__CONSOLE__", shlex.quote(os.path.join(state_dir, "console.log")))
+                  .replace("__STATEENV__", shlex.quote(os.path.join(state_dir, "state.env")))
+                  .replace("__NONKVM__", shlex.quote(os.path.join(
+                      os.path.dirname(os.path.abspath(__file__)), "scripts", "omega-nonkvm.sh")))
+                  .replace("__FIXSH__", shlex.quote(os.path.join(state_dir, "sshx-fix.sh")))
+                  .replace("__NAME__", shlex.quote(str(name)))
+                  .replace("__PORT__", str(int(port)))
+                  .replace("__SSH__", shlex.quote(ssh)))
+    with open(shell_path, "w", encoding="utf-8") as handle:
+        handle.write(shell_text)
+    os.chmod(shell_path, 0o700)
+
+    fix_path = _omega_nonkvm_write_fix_script(name)
+
+    # Only a short look at whether the guest is already up (so a running VPS
+    # opens straight in a root shell). A software-emulated guest can need many
+    # minutes to boot, and the generated bridge shell keeps retrying by itself,
+    # so the SSHX link must not wait for it: that wait is what left the panel
+    # stuck on "Waiting for the Non-KVM guest to boot" for the whole 15 minutes.
+    try:
+        _omega_nonkvm_wait_root_ready(
+            name, port, password, fix_path,
+            timeout=int(os.environ.get("OMEGA_NONKVM_HOST_SSHX_WAIT", "20")), report=report)
+    except Exception:
+        app.logger.debug("waiting for the Non-KVM guest failed", exc_info=True)
+
+    log_path = os.path.join(state_dir, "sshx-bridge.log")
+    open(log_path, "w").close()
+    # The sshx tab title defaults to "user@hostname" (omega-panel@server);
+    # show the panel's own name (Settings > site name) and the VPS instead.
+    site_name = ""
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT site_name FROM settings LIMIT 1").fetchone()
+            site_name = str(row["site_name"] or "").strip() if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        site_name = ""
+    title = ("root@%s" % name)[:60]
+    script_bin = shutil.which("script")
+    env = dict(os.environ)
+    env["HOME"] = env.get("HOME") or "/var/lib/omega-panel"
+    env["TERM"] = "xterm-256color"
+    url_re = re.compile(r"https://sshx\.io/s/[A-Za-z0-9#?=_-]+")
+    text = ""
+    _step(60, "Starting the SSHX terminal bridge\u2026")
+    # Second attempt drops --name for an sshx build that does not know it.
+    for use_name in (True, False):
+        inner = "%s %s--shell %s" % (shlex.quote(sshx),
+                                    ("--name %s " % shlex.quote(title)) if use_name else "",
+                                    shlex.quote(shell_path))
+        open(log_path, "w").close()
+        if script_bin:
+            # sshx wants a pty; a never-ending stdin keeps `script` alive after
+            # the panel restarts (the bridge is its own process group).
+            runner = "sleep 2147483647 | %s -qfc %s %s" % (
+                shlex.quote(script_bin), shlex.quote(inner), shlex.quote(log_path))
+        else:
+            runner = "sleep 2147483647 | %s >%s 2>&1" % (inner, shlex.quote(log_path))
+        proc = subprocess.Popen(["/bin/sh", "-c", runner], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=env, start_new_session=True)
+        with open(os.path.join(state_dir, "sshx-bridge.pid"), "w", encoding="utf-8") as handle:
+            handle.write(str(proc.pid))
+        deadline = time.time() + (max(20, int(timeout)) if not use_name else 25)
+        while time.time() < deadline:
+            try:
+                with open(log_path, "rb") as handle:
+                    text = handle.read().decode("utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            found = url_re.search(text)
+            if found:
+                return found.group(0)
+            if proc.poll() is not None and not _omega_nonkvm_bridge_alive(name):
+                break
+            time.sleep(1)
+        _omega_nonkvm_bridge_stop(name)
+    tail = " ".join(text.split())[-300:]
+    _omega_nonkvm_bridge_stop(name)
+    raise RuntimeError("sshx did not print a share link on the host (check the panel host's internet): %s"
+                       % (tail or "no output"))
+
+
+
 def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, report=None):
     """Return a working SSHX URL for a VPS, creating and caching one if needed.
 
@@ -16738,7 +17314,12 @@ def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, rep
 
     cached = str(vps["ssh_command"] or "").strip()
     if not force and cached and "sshx.io/" in cached:
-        return cached
+        try:
+            _kind = omega_vps_kind(str(vps["container_id"] or ""))
+        except Exception:
+            _kind = ""
+        if _kind != "nonkvm" or _omega_nonkvm_bridge_alive(str(vps["container_id"])):
+            return cached
 
     current, node = get_node_for_vps(int(vps_id))
     if not current or not node:
@@ -16753,6 +17334,20 @@ def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, rep
         if state != "running":
             lxc_start(container_id)
 
+        if (omega_vps_kind(container_id) == "nonkvm"
+                and os.environ.get("OMEGA_NONKVM_SSHX_MODE", "host").strip().lower() != "guest"):
+            # Do not wait for the slow guest: run sshx on the host and let the
+            # terminal itself wait for the guest's SSH (see the bridge above).
+            ssh_command = _omega_nonkvm_host_sshx(container_id, report=_step)
+            _step(90, "Saving the sshx.io share link\u2026")
+            conn = get_db()
+            try:
+                conn.execute("UPDATE vps SET ssh_command = ? WHERE id = ?", (ssh_command, int(vps_id)))
+                conn.commit()
+            finally:
+                conn.close()
+            return ssh_command
+
         if omega_vps_kind(container_id) in ("lxc", "kvm"):
             # VPS created before the repair existed still boot with only
             # 127.0.0.1 on eth0, so fix the link before asking for a link.
@@ -16761,8 +17356,13 @@ def _omega_bot_ensure_sshx(vps_id, force=False, timeout=None, wait_ssh=None, rep
             except Exception:
                 app.logger.debug("Guest networking repair failed for %s",
                                  container_id, exc_info=True)
-        if force:
-            lxc_attach(container_id, "pkill -x sshx >/dev/null 2>&1; rm -f /tmp/sshx_output.log", timeout=20)
+        if force and omega_vps_kind(container_id) != "nonkvm":
+            # A Non-KVM guest may still be booting here and would raise; the
+            # script below kills any old sshx itself once SSH answers.
+            try:
+                lxc_attach(container_id, "pkill -x sshx >/dev/null 2>&1; rm -f /tmp/sshx_output.log", timeout=20)
+            except Exception:
+                app.logger.debug("pre-SSHX cleanup failed for %s", container_id, exc_info=True)
         # Keep this script simple enough for /bin/sh inside the guest, but never
         # let it exit non-zero silently: every failure prints a marker and the
         # tail of its own log, so the panel can show the real reason.
@@ -16913,7 +17513,7 @@ exit 0
             container_id, command,
             timeout=int(timeout or os.environ.get("OMEGA_SSHX_TIMEOUT", "180")),
             wait_ssh=int(wait_ssh if wait_ssh is not None
-                         else os.environ.get("OMEGA_NONKVM_SSH_WAIT", "420")),
+                         else os.environ.get("OMEGA_NONKVM_SSH_WAIT", "900")),
             wait_report=_step,
         )
         if isinstance(output, bytes):
@@ -18319,7 +18919,8 @@ def _omega_ssh_exec(port, password, command, timeout=60):
         })
         cmd = [ssh, "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
                "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
-               "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=10",
+               "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=45",
+               "-o", "ServerAliveInterval=15",
                "-p", str(port), "root@127.0.0.1", command]
         proc = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -18359,11 +18960,42 @@ def _omega_nonkvm_terminal(name):
         "DISPLAY": env.get("DISPLAY") or ":0",
         "TERM": "xterm-256color",
     })
-    argv = [ssh, "-tt", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password",
-            "-o", "NumberOfPasswordPrompts=1", "-o", "ConnectTimeout=15",
-            "-o", "ServerAliveInterval=30", "-p", str(port), "root@127.0.0.1",
-            "TERM=xterm-256color exec /bin/bash -l"]
+    try:
+        fix_path = _omega_nonkvm_write_fix_script(name)
+    except Exception:
+        app.logger.exception("Could not write the Non-KVM repair script")
+        fix_path = ""
+    state_dir = omega_nonkvm_state_dir(name)
+    env.update({
+        "OMEGA_SSH": ssh,
+        "OMEGA_PORT": str(int(port)),
+        "OMEGA_NAME": str(name),
+        "OMEGA_FIX": fix_path,
+        "OMEGA_STATE": state_dir,
+        "OMEGA_NONKVM": os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "scripts", "omega-nonkvm.sh"),
+    })
+    script = r"""
+OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthentication=no
+      -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 -o ConnectTimeout=60
+      -o LogLevel=ERROR -o ServerAliveInterval=30 -p "$OMEGA_PORT")
+printf 'Connecting to the VPS...'
+fixtried=0; starttried=0
+until err=$("$OMEGA_SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null 2>&1); do
+  pid=$(cat "$OMEGA_STATE/qemu.pid" 2>/dev/null)
+  if [ "$starttried" = 0 ] && { [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; }; then
+    starttried=1
+    bash "$OMEGA_NONKVM" start --name "$OMEGA_NAME" >/dev/null 2>&1
+  elif [ "$fixtried" = 0 ] && [ -n "$OMEGA_FIX" ] && printf '%s' "$err" | grep -q 'Permission denied'; then
+    fixtried=1
+    bash "$OMEGA_FIX" >/dev/null 2>&1
+  fi
+  sleep 3
+done
+clear
+exec "$OMEGA_SSH" -tt "${OPTS[@]}" root@127.0.0.1 'TERM=xterm-256color exec /bin/bash -l'
+"""
+    argv = ["bash", "-c", script, "omega-terminal"]
     return argv, env, askpass
 
 
@@ -18456,9 +19088,9 @@ def lxc_attach(name, command, timeout=60, **kwargs):
         # already answered a probe, so one banner timeout is not proof that the
         # VPS is dead. Retry before reporting a failure.
         attempts = 0
-        while code == 255 and attempts < 3:
+        while code == 255 and attempts < 6:
             attempts += 1
-            time.sleep(5)
+            time.sleep(10)
             code, output = _omega_ssh_exec(port, password, command,
                                            timeout=min(int(timeout), 90))
         if code == 255:
@@ -18759,7 +19391,7 @@ def _omega_start_sshx_job(vps_row, owner_id, base_url):
                                            status, progress, message)
                VALUES (?,?,?,?,?,?,?)""",
             (owner_id, vps_row["user_id"], vps_row["id"], vps_type, "running", 10,
-             "Waiting for the Non-KVM guest to boot\u2026" if vps_type == "nonkvm"
+             "Starting the SSHX terminal bridge\u2026" if vps_type == "nonkvm"
              else "Preparing SSHX inside the VPS\u2026"),
         )
         conn.commit()
@@ -18777,7 +19409,7 @@ def _omega_start_sshx_job(vps_row, owner_id, base_url):
                     vps_row["id"], force=True,
                     timeout=int(os.environ.get("OMEGA_SSHX_TIMEOUT",
                                                "900" if vps_type == "nonkvm" else "180")),
-                    wait_ssh=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "600"))
+                    wait_ssh=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "900"))
                     if vps_type == "nonkvm" else 0,
                     report=report,
                 )
@@ -19234,6 +19866,100 @@ def _omega_nonkvm_pid_alive(name):
         return False
 
 
+def _omega_nonkvm_qemu_pid(name):
+    try:
+        with open(os.path.join(omega_nonkvm_state_dir(name), "qemu.pid"), encoding="utf-8") as handle:
+            pid = int(handle.read().strip() or 0)
+        if pid > 0:
+            os.kill(pid, 0)
+            return pid
+    except Exception:
+        pass
+    return 0
+
+
+def _omega_nonkvm_cpu_ticks(name):
+    """Coarse CPU time used so far by the guest's QEMU process (0 if unknown)."""
+    pid = _omega_nonkvm_qemu_pid(name)
+    if not pid:
+        return 0
+    try:
+        with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
+            fields = handle.read().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) // 50
+    except Exception:
+        return 0
+
+
+def _omega_nonkvm_stats(name):
+    """CPU/RAM for a QEMU (Non-KVM) VPS, read from the host's qemu process.
+
+    Non-KVM guests are not Incus instances, so the Incus state API reports
+    nothing and the panel showed 0% CPU and 0 / 0 MB RAM forever.
+    """
+    stats = {'cpu_percent': 0.0, 'memory_used': 0, 'memory_limit': 0,
+             'memory_percent': 0.0, 'net_rx': 0, 'net_tx': 0, 'pids': 0}
+    limit_mb = 0
+    try:
+        with open(os.path.join(omega_nonkvm_state_dir(name), "state.env"), encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("RAM_MB="):
+                    limit_mb = int(line.split("=", 1)[1].strip().strip('"') or 0)
+    except Exception:
+        pass
+    stats['memory_limit'] = limit_mb * 1048576
+    pid = _omega_nonkvm_qemu_pid(name)
+    if not pid:
+        return stats
+    try:
+        with open("/proc/%d/status" % pid, encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    stats['memory_used'] = int(line.split()[1]) * 1024
+                elif line.startswith("Threads:"):
+                    stats['pids'] = int(line.split()[1])
+    except Exception:
+        pass
+    if stats['memory_limit'] and stats['memory_used'] > stats['memory_limit']:
+        stats['memory_used'] = stats['memory_limit']
+    if stats['memory_limit']:
+        stats['memory_percent'] = round(stats['memory_used'] / stats['memory_limit'] * 100, 2)
+    try:
+        def _ticks():
+            with open("/proc/%d/stat" % pid, encoding="utf-8") as handle:
+                fields = handle.read().rsplit(")", 1)[1].split()
+            return int(fields[11]) + int(fields[12])
+        vcpus = 1
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as handle:
+                parts = handle.read().decode("utf-8", "ignore").split("\0")
+            if "-smp" in parts:
+                vcpus = max(1, int(parts[parts.index("-smp") + 1].split(",")[0]))
+        except Exception:
+            pass
+        first, t0 = _ticks(), time.time()
+        time.sleep(0.4)
+        second, t1 = _ticks(), time.time()
+        hz = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        used = (second - first) / float(hz) / max(0.05, t1 - t0) / vcpus * 100.0
+        stats['cpu_percent'] = round(max(0.0, min(100.0, used)), 1)
+    except Exception:
+        pass
+    return stats
+
+
+_omega_lxc_get_stats_base = lxc_get_stats
+
+
+def lxc_get_stats(name):
+    try:
+        if omega_vps_kind(name) == "nonkvm":
+            return _omega_nonkvm_stats(name)
+    except Exception:
+        app.logger.debug("Non-KVM stats failed for %s", name, exc_info=True)
+    return _omega_lxc_get_stats_base(name)
+
+
 def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
     """Wait for a Non-KVM guest to answer SSH.
 
@@ -19252,8 +19978,9 @@ def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
     # straight away instead of burning the whole wait window.
     console_size = _omega_nonkvm_console_size(name)
     console_changed = time.time()
+    last_ticks = _omega_nonkvm_cpu_ticks(name)
     while time.time() < deadline:
-        code, output = _omega_ssh_exec(port, password, "true", timeout=15)
+        code, output = _omega_ssh_exec(port, password, "true", timeout=60)
         if code == 0:
             return True
         last = " ".join(str(output or "").split())[-200:]
@@ -19263,10 +19990,15 @@ def _omega_wait_guest_ssh(name, port, password, timeout=420, report=None):
             )
         now = time.time()
         current_size = _omega_nonkvm_console_size(name)
-        if current_size != console_size:
+        cpu_ticks = _omega_nonkvm_cpu_ticks(name)
+        if current_size != console_size or cpu_ticks != last_ticks:
+            # Ubuntu cloud images print little to the serial console after
+            # systemd starts, so a quiet console alone is not a stalled boot:
+            # the QEMU process burning CPU means the guest is still working.
             console_size = current_size
+            last_ticks = cpu_ticks
             console_changed = now
-        elif now - console_changed > 150 and now - started > 90:
+        elif now - console_changed > 300 and now - started > 180:
             tail = _omega_nonkvm_console_tail(name, 240)
             raise RuntimeError(
                 "The Non-KVM boot stalled: the console has not grown for "
@@ -19306,4 +20038,3 @@ def _omega_static_no_cache(resp):
     except Exception:
         pass
     return resp
-

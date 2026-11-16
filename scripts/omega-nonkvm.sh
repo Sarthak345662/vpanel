@@ -168,9 +168,14 @@ vm_launch() {
     smp=1
     note "TCG boot: using 1 vCPU (requested $(state_value CPU 2))"
   fi
+  # A bigger translation-block cache stops TCG from constantly flushing and
+  # retranslating code, which is what made the software-emulated boot crawl.
+  local accel_opt="${accel}"
+  [[ "$accel" == "tcg" ]] && accel_opt="tcg,tb-size=512"
   local args=(
     -name "$NAME"
-    -machine "q35,accel=${accel}"
+    -accel "$accel_opt"
+    -machine "q35"
     -cpu "$cpu"
     -smp "$smp"
     -device virtio-rng-pci

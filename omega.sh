@@ -164,6 +164,299 @@ need_systemd() {
     command -v systemctl >/dev/null 2>&1 || die "systemd is required (Ubuntu/Debian server)."
 }
 
+# Non-KVM VPS are QEMU processes started by the panel, so they live inside the
+# panel service's cgroup. systemd's default KillMode kills them on every
+# restart/update, which switched the VPS off right after it had booted.
+keep_vms_alive() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local unit d changed=0
+    for unit in omega-panel omega-bot omega-jobs omega-node; do
+        [[ -f "/etc/systemd/system/${unit}.service" ]] || continue
+        d="/etc/systemd/system/${unit}.service.d"
+        if [[ ! -f "$d/keep-vms.conf" ]]; then
+            mkdir -p "$d"
+            printf '[Service]\nKillMode=process\n' > "$d/keep-vms.conf"
+            changed=1
+        fi
+    done
+    [[ "$changed" -eq 1 ]] && systemctl daemon-reload 2>/dev/null || true
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Host network fix: lets VPS/guests get an IP, DNS and internet (needed by SSHX).
+# Runs automatically on install, update, fix and node install, and again at
+# every boot through omega-netfix.service.
+# ---------------------------------------------------------------------------
+fix_host_network() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local helper=/usr/local/sbin/omega-netfix.sh
+    cat > "$helper" <<'NETFIX'
+#!/usr/bin/env bash
+# Vizion Panel: make Incus/LXD/libvirt guests reach the internet.
+BR=""
+if command -v incus >/dev/null 2>&1; then
+  BR=$(incus network list --format csv 2>/dev/null | awk -F, '$2=="bridge" && toupper($3)=="YES"{print $1}')
+fi
+if [ -z "$BR" ] && command -v lxc >/dev/null 2>&1; then
+  BR=$(lxc network list --format csv 2>/dev/null | awk -F, '$2=="bridge" && toupper($3)=="YES"{print $1}')
+fi
+[ -n "$BR" ] || BR="incusbr0 lxdbr0"
+
+for b in $BR; do
+  ip link show "$b" >/dev/null 2>&1 || continue
+  if command -v incus >/dev/null 2>&1 && incus network show "$b" >/dev/null 2>&1; then
+    for k in ipv4.dhcp ipv4.nat; do
+      [ "$(incus network get "$b" "$k" 2>/dev/null)" = "false" ] && incus network set "$b" "$k" true
+    done
+    case "$(incus network get "$b" ipv4.address 2>/dev/null)" in
+      none|"") incus network set "$b" ipv4.address auto 2>/dev/null ;;
+    esac
+  fi
+done
+
+sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-omega-forward.conf
+
+for b in $BR; do
+  ip link show "$b" >/dev/null 2>&1 || continue
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow in on "$b" >/dev/null 2>&1
+    ufw route allow in on "$b" >/dev/null 2>&1
+    ufw route allow out on "$b" >/dev/null 2>&1
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    # Docker sets FORWARD to DROP; DOCKER-USER (when present) is checked first.
+    for chain in INPUT FORWARD; do
+      iptables -C "$chain" -i "$b" -j ACCEPT 2>/dev/null || iptables -I "$chain" -i "$b" -j ACCEPT 2>/dev/null
+    done
+    iptables -C FORWARD -o "$b" -j ACCEPT 2>/dev/null || iptables -I FORWARD -o "$b" -j ACCEPT 2>/dev/null
+    if iptables -nL DOCKER-USER >/dev/null 2>&1; then
+      iptables -C DOCKER-USER -i "$b" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i "$b" -j ACCEPT 2>/dev/null
+      iptables -C DOCKER-USER -o "$b" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -o "$b" -j ACCEPT 2>/dev/null
+    fi
+  fi
+done
+
+if [ -e /dev/kvm ] || modprobe kvm 2>/dev/null; then
+  modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null
+  [ -e /dev/kvm ] && { chmod 666 /dev/kvm 2>/dev/null; usermod -aG kvm omega-panel 2>/dev/null; }
+fi
+exit 0
+NETFIX
+    chmod +x "$helper"
+    if command -v systemctl >/dev/null 2>&1 && [[ ! -f /etc/systemd/system/omega-netfix.service ]]; then
+        cat > /etc/systemd/system/omega-netfix.service <<'UNIT'
+[Unit]
+Description=Vizion Panel guest network fix (firewall, NAT, forwarding)
+After=network-online.target incus.service docker.service ufw.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/omega-netfix.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable omega-netfix.service >/dev/null 2>&1 || true
+    fi
+    if bash "$helper" >/dev/null 2>&1; then
+        ok "guest network fixed (DHCP, NAT, firewall, forwarding)"
+    else
+        warn "guest network fix reported a problem; run: sudo bash $helper"
+    fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Non-KVM VPS auto-start after a server reboot.
+# A VPS that was running keeps a leftover qemu.pid; on boot we start those again.
+# ---------------------------------------------------------------------------
+setup_vm_autostart() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local helper=/usr/local/sbin/omega-vm-autostart.sh
+    cat > "$helper" <<'AUTOSTART'
+#!/usr/bin/env bash
+ROOT="${OMEGA_NONKVM_DIR:-/var/lib/omega-panel/nonkvm}"
+APP="${OMEGA_INSTALL_DIR:-/opt/omega-panel}"
+[ -d "$ROOT" ] || exit 0
+for d in "$ROOT"/*/; do
+  n="$(basename "$d")"
+  [ -f "$d/state.env" ] && [ -f "$d/qemu.pid" ] || continue
+  pid="$(cat "$d/qemu.pid" 2>/dev/null)"
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+  echo "starting Non-KVM VPS $n"
+  if id omega-panel >/dev/null 2>&1; then
+    runuser -u omega-panel -- bash "$APP/scripts/omega-nonkvm.sh" start --name "$n" || true
+  else
+    bash "$APP/scripts/omega-nonkvm.sh" start --name "$n" || true
+  fi
+done
+exit 0
+AUTOSTART
+    chmod +x "$helper"
+    if [[ ! -f /etc/systemd/system/omega-vm-autostart.service ]]; then
+        cat > /etc/systemd/system/omega-vm-autostart.service <<'UNIT'
+[Unit]
+Description=Vizion Panel: start Non-KVM VPS that were running before reboot
+After=network-online.target omega-netfix.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+KillMode=process
+ExecStart=/usr/local/sbin/omega-vm-autostart.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl enable omega-vm-autostart.service >/dev/null 2>&1 || true
+    fi
+    ok "Non-KVM VPS will start again after a server reboot"
+    return 0
+}
+
+# SSHX for Non-KVM VPS runs on the host (the guest boots too slowly without
+# KVM), so the host needs the sshx binary. Safe to run repeatedly.
+install_host_sshx() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    command -v sshx >/dev/null 2>&1 && return 0
+    command -v curl >/dev/null 2>&1 || return 0
+    local arch tmp
+    case "$(uname -m)" in x86_64|amd64) arch=x86_64 ;; aarch64|arm64) arch=aarch64 ;; *) arch="" ;; esac
+    if [[ -n "$arch" ]]; then
+        tmp="$(mktemp -d)"
+        if curl -fsSL "https://s3.amazonaws.com/sshx/sshx-${arch}-unknown-linux-musl.tar.gz" -o "$tmp/sshx.tgz" \
+           && tar -xzf "$tmp/sshx.tgz" -C "$tmp" && [[ -f "$tmp/sshx" ]]; then
+            install -m 0755 "$tmp/sshx" /usr/local/bin/sshx
+        fi
+        rm -rf "$tmp"
+    fi
+    command -v sshx >/dev/null 2>&1 || { curl -fsSL https://sshx.io/get | sh >/dev/null 2>&1 || true; }
+    if command -v sshx >/dev/null 2>&1; then ok "sshx installed on the host"; else warn "could not install sshx on the host (panel will retry on first use)"; fi
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# Non-KVM VPS: requirements + self-heal. Runs on every install / update / fix
+# so a broken boot config (root login refused over SSHX) can never come back.
+# ---------------------------------------------------------------------------
+ensure_nonkvm_deps() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local need=0 c
+    for c in qemu-system-x86_64 qemu-img cloud-localds ssh curl; do
+        command -v "$c" >/dev/null 2>&1 || need=1
+    done
+    [[ "$need" -eq 1 ]] || return 0
+    say "Installing Non-KVM requirements (qemu, cloud-image-utils, ssh) ..."
+    if command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils openssh-client curl >/dev/null 2>&1 \
+            || { apt-get update -qq >/dev/null 2>&1; DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils openssh-client curl >/dev/null 2>&1; } \
+            || warn "could not install some Non-KVM packages"
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf -y install qemu-kvm qemu-img openssh-clients curl >/dev/null 2>&1 || warn "could not install qemu/ssh packages"
+        command -v cloud-localds >/dev/null 2>&1 || dnf -y install cloud-utils >/dev/null 2>&1 \
+            || warn "cloud-localds missing (install cloud-utils / cloud-image-utils manually)"
+    fi
+    command -v cloud-localds >/dev/null 2>&1 || warn "cloud-localds still missing - Non-KVM VPS cannot set the root password"
+    return 0
+}
+
+# A good omega-nonkvm.sh has the fixssh action and NOT the old YAML-breaking
+# "\{0,1\}" escape that made cloud-init reject the whole config.
+nonkvm_script_ok() {
+    [[ -s "$1" ]] && grep -q 'fixssh' "$1" && ! grep -qF '{0,1}' "$1" && bash -n "$1" 2>/dev/null
+}
+
+heal_nonkvm_script() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local dst="$INSTALL_DIR/scripts/omega-nonkvm.sh" src tmp
+    [[ -d "$INSTALL_DIR/scripts" ]] || return 0
+    if nonkvm_script_ok "$dst"; then return 0; fi
+    warn "omega-nonkvm.sh is outdated/broken - replacing it"
+    for src in "$ROOT_DIR/scripts/omega-nonkvm.sh" "$ROOT_DIR/omega-nonkvm.sh"; do
+        if [[ "$src" != "$dst" ]] && nonkvm_script_ok "$src"; then
+            install -m 0755 "$src" "$dst"
+            id omega-panel >/dev/null 2>&1 && chown omega-panel:omega-panel "$dst" 2>/dev/null || true
+            ok "omega-nonkvm.sh repaired"
+            return 0
+        fi
+    done
+    if command -v curl >/dev/null 2>&1; then
+        tmp="$(mktemp)"
+        if curl -fsSL "${RAW_BASE}/scripts/omega-nonkvm.sh" -o "$tmp" && nonkvm_script_ok "$tmp"; then
+            install -m 0755 "$tmp" "$dst"
+            id omega-panel >/dev/null 2>&1 && chown omega-panel:omega-panel "$dst" 2>/dev/null || true
+            ok "omega-nonkvm.sh repaired (downloaded)"
+            rm -f "$tmp"
+            return 0
+        fi
+        rm -f "$tmp"
+    fi
+    warn "could not repair omega-nonkvm.sh automatically; copy scripts/omega-nonkvm.sh to $dst"
+    return 0
+}
+
+# Existing Non-KVM VPS created with the old broken boot config: running ones
+# are rebuilt + rebooted once (fixssh); stopped ones rebuild on their next start.
+repair_nonkvm_vms() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    local root="${OMEGA_NONKVM_DIR:-/var/lib/omega-panel/nonkvm}" script="$INSTALL_DIR/scripts/omega-nonkvm.sh" d n pid
+    [[ -d "$root" && -f "$script" ]] || return 0
+    command -v cloud-localds >/dev/null 2>&1 || return 0
+    nonkvm_script_ok "$script" || return 0
+    for d in "$root"/*/; do
+        [[ -f "${d}state.env" ]] || continue
+        grep -q '^SSHFIX=3' "${d}state.env" && continue
+        n="$(basename "$d")"
+        pid="$(cat "${d}qemu.pid" 2>/dev/null || true)"
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            say "Repairing running Non-KVM VPS ${n} (one reboot) ..."
+            if id omega-panel >/dev/null 2>&1; then
+                runuser -u omega-panel -- bash "$script" fixssh --name "$n" >/dev/null 2>&1 && ok "${n} repaired" || warn "could not repair ${n}"
+            else
+                bash "$script" fixssh --name "$n" >/dev/null 2>&1 && ok "${n} repaired" || warn "could not repair ${n}"
+            fi
+        fi
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# One function that applies every host-side fix. Runs on install, update,
+# fix and node install, so nothing has to be pasted by hand afterwards.
+# ---------------------------------------------------------------------------
+omega_post_setup() {
+    [[ "$(id -u)" -eq 0 ]] || return 0
+    say "Applying host fixes (network, VPS keep-alive, auto-start) ..."
+    keep_vms_alive
+    fix_host_network
+    ensure_nonkvm_deps
+    heal_nonkvm_script
+    setup_vm_autostart
+    install_host_sshx
+    # SSH client is needed by the panel to talk to Non-KVM guests.
+    if ! command -v ssh >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client >/dev/null 2>&1 || warn "could not install openssh-client"
+    fi
+    # Panel user needs to own the Non-KVM state and use KVM.
+    if id omega-panel >/dev/null 2>&1; then
+        mkdir -p /var/lib/omega-panel/nonkvm /var/lib/omega-panel/images 2>/dev/null || true
+        chown -R omega-panel:omega-panel /var/lib/omega-panel/nonkvm /var/lib/omega-panel/images 2>/dev/null || true
+        [[ -e /dev/kvm ]] && usermod -aG kvm omega-panel 2>/dev/null || true
+    fi
+    repair_nonkvm_vms
+    ok "host fixes applied"
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # Panel install / update / repair / doctor
 # ---------------------------------------------------------------------------
@@ -175,6 +468,7 @@ install_panel() {
     draw_steps "Checking systemd and Python" "Installing LXC / KVM / Incus stack" \
                "Creating the panel virtualenv" "Seeding the local node" "Starting 24/7 services"
     run_animated "Installing the panel (setup.sh)" bash "$ROOT_DIR/setup.sh" "$@" || die "Install failed. See $LOG_FILE"
+    omega_post_setup
     ok "Install finished."
     echo
     echo "  Panel URL : http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PANEL_PORT}"
@@ -257,6 +551,7 @@ install_node_type() {
     run_animated "Node stack (${type})" bash "$ROOT_DIR/scripts/omega-node-install.sh" "--type=${type}" \
         || die "Node install failed. See $LOG_FILE"
     echo
+    omega_post_setup
     ok "Node stack ready: ${type}"
     echo "  Agent health : http://127.0.0.1:${NODE_PORT}/api/health"
     echo "  Now connect it to the panel: menu 6 -> 4, or:"
@@ -406,8 +701,9 @@ create_panel_user() {
     [[ -x "$py" ]] || die "Panel is not installed (missing ${py}). Choose Install first."
     [[ -f "${INSTALL_DIR}/app.py" ]] || die "Panel code is missing in ${INSTALL_DIR}."
 
-    local out
-    out="$(cd "$INSTALL_DIR" && OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
+    local out rc update_mode=0 answer
+    _omega_run_user_py() {
+        (cd "$INSTALL_DIR" && { set -a; [[ -r /etc/omega-panel/omega.env ]] && . /etc/omega-panel/omega.env; set +a; true; } && OMEGA_USER_UPDATE="$update_mode" OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
 import json
 import secrets
 import sys
@@ -425,9 +721,29 @@ except Exception:
     pass
 conn = panel.get_db()
 columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
-    print(json.dumps({"error": f"user '{username}' already exists"}))
-    raise SystemExit(1)
+existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+if existing:
+    import os
+    if os.environ.get("OMEGA_USER_UPDATE") != "1":
+        print(json.dumps({"error": f"user '{username}' already exists", "exists": True}))
+        raise SystemExit(3)
+    # Update mode: reset password, role and limits of the existing user.
+    sets = ["password = ?", "is_admin = ?"]
+    vals = [panel.hash_password(password), is_admin]
+    if "role" in columns:
+        sets.append("role = ?")
+        vals.append("admin" if is_admin else "user")
+    if "max_vps" in columns:
+        sets.append("max_vps = ?")
+        vals.append(max_vps)
+    vals.append(username)
+    conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE username = ?", vals)
+    conn.commit()
+    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    print(json.dumps({"id": row[0], "username": username, "admin": bool(is_admin),
+                      "max_vps": max_vps, "bot_token": None, "updated": True}))
+    raise SystemExit(0)
 fields = ["username", "email", "password", "is_admin", "api_key"]
 values = [username, email, panel.hash_password(password), is_admin, panel.generate_api_key()]
 if "role" in columns:
@@ -449,11 +765,27 @@ row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetch
 conn.close()
 print(json.dumps({"id": row["id"], "username": username, "admin": bool(is_admin),
                   "max_vps": max_vps, "bot_token": bot_token}))
+
 PY
-)" || { echo "$out"; die "User creation failed."; }
+    )
+    }
+    out="$(_omega_run_user_py)" && rc=0 || rc=$?
+    if [[ $rc -eq 3 ]]; then
+        warn "User '${username}' already exists."
+        read -rp "Update this user instead (reset password / admin / max VPS)? [y/N]: " answer || true
+        if [[ "${answer:-}" =~ ^[Yy] ]]; then
+            update_mode=1
+            out="$(_omega_run_user_py)" && rc=0 || rc=$?
+        else
+            die "Nothing changed. Pick another username, or run again and answer y to update."
+        fi
+    fi
+    [[ $rc -eq 0 ]] || { echo "$out"; die "User creation failed."; }
+    # keep the DB files owned like the data dir so the panel service can still write them
+    chown --reference=/var/lib/omega-panel /var/lib/omega-panel/omega.db* 2>/dev/null || true
 
     echo
-    ok "Panel user created"
+    ok "Panel user saved"
     "$py" - "$out" <<'PY'
 import json
 import sys
@@ -511,6 +843,7 @@ fetch_latest() {   # downloads latest code into $1
 }
 
 restart_services() {
+    omega_post_setup
     # Make sure the Discord bot / background worker unit exists (added in newer versions).
     if [[ -f "$INSTALL_DIR/bot_runner.py" && ! -f /etc/systemd/system/omega-bot.service ]]; then
         local svc_user="omega-panel"; id "$svc_user" >/dev/null 2>&1 || svc_user="root"
@@ -553,6 +886,7 @@ UNIT
 update_panel() {
     need_root
     need_systemd
+    keep_vms_alive
     local tmp
     if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         say "Git checkout found - pulling the latest code ..."
@@ -573,6 +907,7 @@ update_panel() {
 fix_panel() {
     need_root
     need_systemd
+    keep_vms_alive
     say "Repairing ${INSTALL_DIR} ..."
     [[ -d "$INSTALL_DIR" ]] || die "Panel is not installed. Choose Install first."
     if [[ "$ROOT_DIR" != "$INSTALL_DIR" && -f "$ROOT_DIR/app.py" ]]; then
@@ -746,6 +1081,8 @@ case "${1:-}" in
     --update) update_panel ;;
     --fix|--repair) fix_panel ;;
     --doctor) doctor_panel ;;
+    --net-fix|--netfix) fix_host_network ;;
+    --post-setup|--apply-fixes) omega_post_setup ;;
     --help|-h)
         clear_screen
         print_logo
@@ -767,6 +1104,7 @@ Usage: sudo bash omega.sh [option]
   --update           download latest code + re-run the installer
   --fix              repair deps/permissions and restart services
   --doctor           check code, services, port and show logs
+  --net-fix          fix guest DHCP/NAT/firewall so VPS get internet (SSHX)
 
 Node types (each installs a different stack):
   lxc    plain LXC containers only (no QEMU/libvirt packages)
