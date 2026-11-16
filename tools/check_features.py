@@ -468,6 +468,86 @@ check("sshx script brings eth0 up before downloading",
 check("sshx network failure shows the interface address",
       "addr: /" in ensure_src, "")
 
+# 13. Node connect: name + IP in, one command out, agent enroll online.
+root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+modal = panel.EMBEDDED_TEMPLATES["nodes.html"].split('id="addNodeModal"')[1] \
+    .split('id="editNodeModal"')[0]
+check("add-node form asks only for a name and the VPS IP",
+      'name="name"' in modal and 'name="hostname"' in modal
+      and 'name="node_port"' not in modal and 'name="max_vps"' not in modal, "")
+check("add-node form hides the stack choice", 'value="auto"' in modal, "")
+connect_cmd = panel._omega_node_connect_command(
+    {"name": "edge-1", "node_url": "http://203.0.113.9:5001",
+     "node_type": "auto", "hostname": "203.0.113.9"},
+    panel_url="http://panel.example:5000", key="k" * 10)
+check("connect command is one line that installs and connects",
+      connect_cmd.count("\n") == 0 and "--node-connect" in connect_cmd
+      and "http://panel.example:5000" in connect_cmd
+      and "--type auto" in connect_cmd, connect_cmd[:120])
+omega = io.open(os.path.join(root, "omega.sh"), encoding="utf-8").read()
+check("omega.sh forwards --type to the connect step",
+      'NODE_CONNECT_ARGS+=("--type"' in omega, "")
+check("omega.sh resolves an auto stack on the node", "resolve_node_type" in omega
+      and 'auto|"")' in omega, "")
+installer = io.open(os.path.join(root, "scripts", "omega-node-install.sh"),
+                    encoding="utf-8").read()
+check("agent key is synced with the panel node token",
+      'cp -f /etc/omega-panel/node-token "${INSTALL_DIR}/.node_api_key"' in installer, "")
+check("installer auto-detect checks /dev/kvm",
+      'if [[ -e /dev/kvm ]]; then' in installer, "")
+
+# The one-line command is flags only; before the dispatch guard it fell through
+# to the menu and exited "No interactive terminal" without connecting anything.
+import shutil
+import subprocess
+dispatch = os.path.join(tmp, "dispatch")
+shutil.rmtree(dispatch, ignore_errors=True)
+os.makedirs(os.path.join(dispatch, "scripts"))
+shutil.copy(os.path.join(root, "omega.sh"), dispatch)
+open(os.path.join(dispatch, "setup.sh"), "w").close()
+stub_log = os.path.join(dispatch, "out.txt")
+for name, body in (("omega-node-install.sh", "INSTALL_ARGS: $*\n"),
+                   ("omega-node-connect.sh", "CONNECT_ARGS: $*\n")):
+    path = os.path.join(dispatch, "scripts", name)
+    with open(path, "w") as handle:
+        handle.write('#!/usr/bin/env bash\necho "%s" >> %s\nexit 0\n' % (body, stub_log))
+    os.chmod(path, 0o755)
+ran = subprocess.run(
+    ["bash", "omega.sh", "--node-connect", "--panel", "http://panel.example:5000",
+     "--key", "K1", "--name", "n1", "--url", "http://203.0.113.9:5001",
+     "--type", "auto"],
+    cwd=dispatch, capture_output=True, text=True, timeout=90,
+    env=dict(os.environ, OMEGA_NO_ANIM="1"))
+stub_text = ""
+if os.path.exists(stub_log):
+    stub_text = io.open(stub_log, encoding="utf-8").read()
+no_systemd = "systemd is required" in (ran.stdout + ran.stderr)
+check("one-line connect command runs the connect step, not the menu",
+      no_systemd or "CONNECT_ARGS: --panel http://panel.example:5000 --key K1 --name n1"
+      in stub_text, (ran.stdout + ran.stderr)[-180:])
+check("one-line connect command keeps the panel/name/url arguments",
+      no_systemd or "--url http://203.0.113.9:5001" in stub_text, stub_text[-160:])
+
+client = panel.app.test_client()
+enroll_key = panel._omega_node_enroll_key()
+resp = client.post("/api/nodes/enroll",
+                   json={"name": "edge-1", "node_url": "http://203.0.113.9:5001",
+                         "token": "a" * 64, "hostname": "203.0.113.9"},
+                   headers={"X-Omega-Enroll": enroll_key})
+check("connect command enrolls the node", resp.status_code == 200,
+      resp.get_data(as_text=True)[:140])
+conn = panel.get_db()
+row = conn.execute("SELECT * FROM nodes WHERE name='edge-1'").fetchone()
+conn.close()
+check("enrolled node is online with the agent token as its API key",
+      bool(row) and row["status"] == "online" and row["api_key"] == "a" * 64
+      and row["node_url"] == "http://203.0.113.9:5001", "")
+bad = client.post("/api/nodes/enroll",
+                  json={"name": "edge-2", "node_url": "http://203.0.113.10:5001",
+                        "token": "b" * 64},
+                  headers={"X-Omega-Enroll": "wrong-key"})
+check("enrollment rejects a wrong enrollment key", bad.status_code == 403, "")
+
 print()
 if failures:
     print("FAILURES:", len(failures))

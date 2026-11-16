@@ -86,11 +86,14 @@ have systemctl || die "systemd is required"
 case "$NODE_TYPE" in
   lxc|kvm|incus|none) ;;
   auto)
-    if have incus; then
+    # Decide from the hardware: only a host with /dev/kvm can run VMs, so it
+    # gets the full Incus stack. Everything else runs containers only.
+    if [[ -e /dev/kvm ]]; then
       NODE_TYPE="incus"
     else
-      NODE_TYPE="incus"
+      NODE_TYPE="lxc"
     fi
+    echo "[node-install] auto-detected stack: ${NODE_TYPE}"
     ;;
   *) die "Unknown --type '$NODE_TYPE' (use lxc, kvm, incus, none or auto)" ;;
 esac
@@ -225,6 +228,13 @@ if [[ ! -s /etc/omega-panel/node-token ]]; then
 fi
 chown root:"$SERVICE_USER" /etc/omega-panel/node-token 2>/dev/null || true
 chmod 0640 /etc/omega-panel/node-token
+# The agent authenticates with .node_api_key while the panel keeps the same
+# secret in node-token (it sends it as X-API-Key). If the two files disagree the
+# panel can reach the agent but every call answers 401, so keep them identical.
+cp -f /etc/omega-panel/node-token "${INSTALL_DIR}/.node_api_key"
+chown "${SERVICE_USER}:${SERVICE_USER}" "${INSTALL_DIR}/.node_api_key" 2>/dev/null || true
+chmod 0640 "${INSTALL_DIR}/.node_api_key"
+echo "[node-install] agent API key synced from /etc/omega-panel/node-token"
 
 install -m 0644 "$INSTALL_DIR/systemd/omega-node.service" "/etc/systemd/system/${UNIT}"
 # A node on another VPS must listen beyond loopback for the panel to reach it.

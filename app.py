@@ -5574,31 +5574,15 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <form method="POST" action="/nodes/add">
                 <div class="form-group">
                     <label>Node Name</label>
-                    <input type="text" name="name" class="form-control" placeholder="e.g. US-1" required>
+                    <input type="text" name="name" class="form-control" placeholder="e.g. US-1" required autocomplete="off">
                 </div>
                 <div class="form-group">
-                    <label>Hostname / IP</label>
-                    <input type="text" name="hostname" class="form-control" placeholder="e.g. us1.example.com or 203.0.113.5" required>
+                    <label>VPS / VDS IP</label>
+                    <input type="text" name="hostname" class="form-control" placeholder="e.g. 203.0.113.5" required autocomplete="off">
+                    <small class="text-dim" style="font-size:11px;">That is all. You get one command to paste on that server as root; it installs the stack, starts the agent and connects the node automatically.</small>
                 </div>
-                <div class="form-group">
-                    <label>VPS type (install stack)</label>
-                    <select name="node_type" class="form-control">
-                        <option value="lxc">LXC node — containers only</option>
-                        <option value="kvm">KVM node — QEMU/KVM + libvirt</option>
-                        <option value="incus">Incus node — containers + VMs</option>
-                    </select>
-                    <small class="text-dim" style="font-size:11px;">Each type installs a different stack. The panel shows the exact command after you click Add.</small>
-                </div>
-                <div class="form-group">
-                    <label>Agent port</label>
-                    <input type="number" name="node_port" class="form-control" value="5001" min="1" max="65535">
-                    <small class="text-dim" style="font-size:11px;">Node URL is built as http://IP:PORT. Leave the API key empty for a new node.</small>
-                </div>
-                <div class="form-group">
-                    <label>Max VPS</label>
-                    <input type="number" name="max_vps" class="form-control" value="500">
-                </div>
-                <button type="submit" class="btn btn-primary" style="width:100%;">Add Node</button>
+                <input type="hidden" name="node_type" value="auto">
+                <button type="submit" class="btn btn-primary" style="width:100%;">Add Node &amp; Get Command</button>
             </form>
         </div>
     </div>
@@ -12824,6 +12808,7 @@ def add_local_node():
     flash('Local node added', 'success')
     return redirect(url_for('node_management'))
 NODE_INSTALL_TYPES = {
+    "auto": ("Auto node", "Detects the server: KVM capable hosts get Incus (containers + VMs), the rest get plain LXC."),
     "lxc": ("LXC node", "Plain LXC + Incus container backend. No KVM/QEMU packages are installed."),
     "kvm": ("KVM node", "QEMU/KVM + libvirt, with a /dev/kvm check before the first VM."),
     "incus": ("Incus node", "Full Incus install: system containers and QEMU virtual machines."),
@@ -12862,9 +12847,9 @@ def _omega_node_connect_command(node, node_type=None, panel_url=None, key=None):
         stored_type = node["node_type"]
     except (KeyError, IndexError, TypeError):
         stored_type = None
-    node_type = str(node_type or stored_type or "lxc").strip().lower()
+    node_type = str(node_type or stored_type or "auto").strip().lower()
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = "lxc"
+        node_type = "auto"
     panel_url = str(panel_url or _omega_panel_public_url()).rstrip("/")
     key = key or _omega_node_enroll_key()
     try:
@@ -12894,11 +12879,11 @@ def add_node():
     """
     name = (request.form.get('name') or '').strip()
     address = (request.form.get('hostname') or request.form.get('ip') or '').strip()
-    node_type = (request.form.get('node_type') or 'lxc').strip().lower()
+    node_type = (request.form.get('node_type') or 'auto').strip().lower()
     if node_type in ('vm', 'qemu', 'incus-vm'):
         node_type = 'kvm'
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = 'lxc'
+        node_type = 'auto'
     port = re.sub(r'\D', '', request.form.get('node_port') or '') or '5001'
     max_vps = request.form.get('max_vps', 500)
     api_key = (request.form.get('api_key') or '').strip()
@@ -12935,7 +12920,7 @@ def add_node():
     conn.commit()
     conn.close()
     add_log('info', f'Node {name} ({address}) registered as {node_type} ({status})', 'node')
-    flash(f'Node {name} added. Run the command below on {address} to finish the connection.', 'success')
+    flash(f'Node {name} added. Run the command below on {address} (as root) - it installs the stack, starts the agent and connects itself.', 'success')
     return redirect(url_for('node_connect_page', node_id=node_id))
 
 
@@ -12949,11 +12934,11 @@ def node_connect_page(node_id):
         flash('Node not found', 'error')
         return redirect(url_for('node_management'))
     try:
-        node_type = str(node['node_type'] or 'lxc').lower()
+        node_type = str(node['node_type'] or 'auto').lower()
     except (KeyError, IndexError):
-        node_type = 'lxc'
+        node_type = 'auto'
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = 'lxc'
+        node_type = 'auto'
     return render_template(
         'node_connect.html', node=node, node_type=node_type,
         install_types=NODE_INSTALL_TYPES,
@@ -12970,11 +12955,11 @@ def node_command_preview():
     data = request.get_json(silent=True) or request.form
     name = str(data.get('name') or 'node-1').strip()
     address = str(data.get('ip') or data.get('hostname') or '').strip()
-    node_type = str(data.get('node_type') or 'lxc').strip().lower()
+    node_type = str(data.get('node_type') or 'auto').strip().lower()
     if node_type in ('vm', 'qemu', 'incus-vm'):
         node_type = 'kvm'
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = 'lxc'
+        node_type = 'auto'
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{1,63}', name):
         return jsonify({'error': 'Invalid node name'}), 400
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{2,253}', address):
@@ -13065,13 +13050,14 @@ canvas{position:fixed;inset:0;pointer-events:none;z-index:5}
 <p class="sub">Run the command on {{ node['hostname'] }}. This page turns green automatically when the node reports in.</p></div>
 <span class="pill {{ 'on' if node['status'] == 'online' else '' }}" id="statePill"><span class="dot"></span><span id="stateText">{{ node['status']|upper }}</span></span></div>
 
-<div class="card"><h2>1 · Choose the virtualisation stack</h2>
+<div class="card"><h2>1 · Stack (auto-detected on the server)</h2>
 <div class="types">{% for key, meta in install_types.items() %}
 <div class="type {{ 'sel' if key == node_type else '' }}"><b>{{ meta[0] }}</b>{{ meta[1] }}</div>
 {% endfor %}</div>
 <p class="sub" style="margin-top:10px">Selected: <b>{{ install_types[node_type][0] }}</b> · the command below installs exactly this stack.</p></div>
 
-<div class="card"><h2>2 · Run this on the new VPS</h2>
+<div class="card"><h2>2 · Run this on the new VPS as root</h2>
+<p class="sub" style="margin:-4px 0 10px">SSH into {{ node['hostname'] }} and paste it. Nothing else to install or edit.</p>
 <pre id="cmd">{{ command }}</pre>
 <div class="row"><button onclick="copyCmd()">Copy command</button>
 <button class="ghost" onclick="location.reload()">Refresh status</button>

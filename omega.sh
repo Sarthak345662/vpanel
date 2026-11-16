@@ -223,10 +223,23 @@ node_type_menu() {
     esac
 }
 
+resolve_node_type() {
+    case "${1:-auto}" in
+        auto|"")
+            if [[ -e /dev/kvm ]]; then echo incus; else echo lxc; fi ;;
+        lxc|kvm|incus) echo "$1" ;;
+        *) echo lxc ;;
+    esac
+}
+
 install_node_type() {
     local type="$1"
     need_root
     need_systemd
+    if [[ "$type" == "auto" ]]; then
+        type="$(resolve_node_type auto)"
+        say "Auto-detected stack for this server: ${type}"
+    fi
     case "$type" in
         lxc)   say "Installing an LXC node (plain LXC + Incus container backend, no KVM packages)" ;;
         kvm)   say "Installing a KVM node (QEMU/KVM + libvirt, /dev/kvm verified)" ;;
@@ -272,7 +285,7 @@ node_status() {
 
 node_connect() {
     need_systemd
-    local panel="" enroll_key="" node_name="" node_url="" node_bind="" node_type="lxc" panel_host
+    local panel="" enroll_key="" node_name="" node_url="" node_bind="" node_type="auto" panel_host
 
     # Non-interactive flags (used by the panel's generated one-line command).
     while [[ $# -gt 0 ]]; do
@@ -297,16 +310,37 @@ node_connect() {
         read -rp "Enrollment key: " enroll_key || true
         read -rp "Node name [$(hostname -s 2>/dev/null || hostname)]: " node_name || true
         node_name="${node_name:-$(hostname -s 2>/dev/null || hostname)}"
-        read -rp "Node type (lxc/kvm/incus) [lxc]: " node_type || true
-        node_type="${node_type:-lxc}"
+        read -rp "Node type (auto/lxc/kvm/incus) [auto]: " node_type || true
+        node_type="${node_type:-auto}"
     fi
     [[ -n "${enroll_key:-}" ]] || die "Enrollment key is required (Admin -> Nodes -> Add Node)."
     node_name="${node_name:-$(hostname -s 2>/dev/null || hostname)}"
-    case "$node_type" in lxc|kvm|incus) ;; *) warn "Unknown type '$node_type', using lxc"; node_type=lxc ;; esac
+    case "$node_type" in
+        lxc|kvm|incus) ;;
+        auto|"") node_type="auto" ;;
+        *) warn "Unknown type '$node_type', using auto"; node_type="auto" ;;
+    esac
+    # The stack is decided on the node, not in the panel: a KVM capable server
+    # gets Incus (containers + VMs), anything else plain LXC.
+    if [[ "$node_type" == "auto" ]]; then
+        node_type="$(resolve_node_type auto)"
+        say "Auto-detected stack for this server: ${node_type}"
+    fi
 
     panel_host="$(printf '%s' "$panel" | sed -E 's#^https?://([^/:]+).*#\1#')"
+    # The panel's command always carries the node URL, so a node on another
+    # server must listen beyond loopback even when the panel was opened through
+    # localhost (otherwise the panel can never reach it).
+    node_host=""
+    if [[ -n "${node_url:-}" ]]; then
+        node_host="$(printf '%s' "$node_url" | sed -E 's#^https?://([^/:]+).*#\1#')"
+    fi
+    node_is_remote=0
+    if [[ -n "$node_host" && "$node_host" != "127.0.0.1" && "$node_host" != "localhost" && "$node_host" != "::1" ]]; then
+        node_is_remote=1
+    fi
     if [[ -z "${node_bind:-}" ]]; then
-        if [[ "$panel_host" == "127.0.0.1" || "$panel_host" == "localhost" ]]; then
+        if [[ "$node_is_remote" -eq 0 ]] && { [[ "$panel_host" == "127.0.0.1" || "$panel_host" == "localhost" ]]; }; then
             node_bind="127.0.0.1"
         else
             node_bind="0.0.0.0"
@@ -674,8 +708,14 @@ NODE_CONNECT_ARGS=()
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --type=*) NODE_TYPE_ARG="${1#*=}"; shift ;;
-        --type) NODE_TYPE_ARG="${2:-}"; shift 2 ;;
+        --type=*)
+            NODE_TYPE_ARG="${1#*=}"
+            NODE_CONNECT_ARGS+=("--type" "${1#*=}")
+            shift ;;
+        --type)
+            NODE_TYPE_ARG="${2:-}"
+            NODE_CONNECT_ARGS+=("--type" "${2:-}")
+            shift 2 ;;
         --node-connect) NODE_CONNECT_ARGS+=("--node-connect"); shift ;;
         --panel|--key|--name|--url|--bind)
             NODE_CONNECT_ARGS+=("$1" "${2:-}"); shift 2 ;;
@@ -683,6 +723,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+# The panel's one-line command is flags only (--node-connect --panel ... --key ...),
+# so POSITIONAL is empty and the dispatcher used to fall through to the menu,
+# which then exited with "No interactive terminal" without connecting anything.
+if [[ -z "${1:-}" ]] && (( ${#NODE_CONNECT_ARGS[@]} > 0 )); then
+    set -- "${NODE_CONNECT_ARGS[@]}"
+fi
 
 case "${1:-}" in
     --install) shift; install_panel "$@" ;;
@@ -711,8 +757,8 @@ Usage: sudo bash omega.sh [option]
   --uninstall        stop and remove the panel services
   --node             install this host as a node and connect it (guided)
   --node-connect     non-interactive connect, needs:
-                       --panel URL --key KEY --name NAME --url NODE_URL [--type lxc|kvm|incus]
-  --node-install     install only the node stack: --type lxc | kvm | incus
+                       --panel URL --key KEY --name NAME --url NODE_URL [--type auto|lxc|kvm|incus]
+  --node-install     install only the node stack: --type auto | lxc | kvm | incus
   --node-types       interactive node install menu
   --node-status      show incus / qemu / lxc / kvm capabilities
   --create-user      create a panel user from the CLI
