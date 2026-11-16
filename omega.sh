@@ -735,13 +735,13 @@ print(json.dumps({"id": row["id"], "username": username, "admin": bool(is_admin)
 PY
     )
     }
-    out="$(_omega_run_user_py)"; rc=$?
+    out="$(_omega_run_user_py)" && rc=0 || rc=$?
     if [[ $rc -eq 3 ]]; then
         warn "User '${username}' already exists."
         read -rp "Update this user instead (reset password / admin / max VPS)? [y/N]: " answer || true
         if [[ "${answer:-}" =~ ^[Yy] ]]; then
             update_mode=1
-            out="$(_omega_run_user_py)"; rc=$?
+            out="$(_omega_run_user_py)" && rc=0 || rc=$?
         else
             die "Nothing changed. Pick another username, or run again and answer y to update."
         fi
