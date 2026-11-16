@@ -17110,7 +17110,8 @@ def _omega_nonkvm_wait_root_ready(name, port, password, fix_path, timeout=900, r
     Returns True when ready, False on timeout (the terminal then keeps retrying).
     """
     started = time.time()
-    deadline = started + max(60, int(timeout))
+    deadline = started + max(10, int(timeout))
+    short_wait = int(timeout) < 120
     fixed = False
     last_report = 0.0
     while time.time() < deadline:
@@ -17134,7 +17135,8 @@ def _omega_nonkvm_wait_root_ready(name, port, password, fix_path, timeout=900, r
             except Exception:
                 app.logger.debug("sshx-fix.sh failed", exc_info=True)
             started = time.time()
-            deadline = max(deadline, started + 420)
+            if not short_wait:
+                deadline = max(deadline, started + 420)
         now = time.time()
         if report and now - last_report >= 5:
             last_report = now
@@ -17196,10 +17198,15 @@ OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o PubkeyAuthe
 SSH=__SSH__
 fixtried=0
 while true; do
+  waited=0
   until err=$("$SSH" "${OPTS[@]}" root@127.0.0.1 true </dev/null 2>&1); do
     if [ "$fixtried" = 0 ] && printf '%s' "$err" | grep -q 'Permission denied'; then
       fixtried=1
       bash __FIXSH__ >/dev/null 2>&1
+    fi
+    if [ "$waited" = 0 ]; then
+      printf '\r\nWaiting for the VPS to finish booting (this can take several minutes without KVM)...\r\n'
+      waited=1
     fi
     sleep 3
   done
@@ -17223,11 +17230,15 @@ done
 
     fix_path = _omega_nonkvm_write_fix_script(name)
 
-    # Wait for the guest first, so the SSHX link opens directly in a root shell.
+    # Only a short look at whether the guest is already up (so a running VPS
+    # opens straight in a root shell). A software-emulated guest can need many
+    # minutes to boot, and the generated bridge shell keeps retrying by itself,
+    # so the SSHX link must not wait for it: that wait is what left the panel
+    # stuck on "Waiting for the Non-KVM guest to boot" for the whole 15 minutes.
     try:
         _omega_nonkvm_wait_root_ready(
             name, port, password, fix_path,
-            timeout=int(os.environ.get("OMEGA_NONKVM_SSH_WAIT", "900")), report=report)
+            timeout=int(os.environ.get("OMEGA_NONKVM_HOST_SSHX_WAIT", "20")), report=report)
     except Exception:
         app.logger.debug("waiting for the Non-KVM guest failed", exc_info=True)
 
