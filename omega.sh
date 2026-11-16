@@ -667,8 +667,9 @@ create_panel_user() {
     [[ -x "$py" ]] || die "Panel is not installed (missing ${py}). Choose Install first."
     [[ -f "${INSTALL_DIR}/app.py" ]] || die "Panel code is missing in ${INSTALL_DIR}."
 
-    local out
-    out="$(cd "$INSTALL_DIR" && OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
+    local out rc update_mode=0 answer
+    _omega_run_user_py() {
+        (cd "$INSTALL_DIR" && OMEGA_USER_UPDATE="$update_mode" OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
 import json
 import secrets
 import sys
@@ -686,9 +687,29 @@ except Exception:
     pass
 conn = panel.get_db()
 columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
-    print(json.dumps({"error": f"user '{username}' already exists"}))
-    raise SystemExit(1)
+existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+if existing:
+    import os
+    if os.environ.get("OMEGA_USER_UPDATE") != "1":
+        print(json.dumps({"error": f"user '{username}' already exists", "exists": True}))
+        raise SystemExit(3)
+    # Update mode: reset password, role and limits of the existing user.
+    sets = ["password = ?", "is_admin = ?"]
+    vals = [panel.hash_password(password), is_admin]
+    if "role" in columns:
+        sets.append("role = ?")
+        vals.append("admin" if is_admin else "user")
+    if "max_vps" in columns:
+        sets.append("max_vps = ?")
+        vals.append(max_vps)
+    vals.append(username)
+    conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE username = ?", vals)
+    conn.commit()
+    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    print(json.dumps({"id": row[0], "username": username, "admin": bool(is_admin),
+                      "max_vps": max_vps, "bot_token": None, "updated": True}))
+    raise SystemExit(0)
 fields = ["username", "email", "password", "is_admin", "api_key"]
 values = [username, email, panel.hash_password(password), is_admin, panel.generate_api_key()]
 if "role" in columns:
@@ -710,11 +731,25 @@ row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetch
 conn.close()
 print(json.dumps({"id": row["id"], "username": username, "admin": bool(is_admin),
                   "max_vps": max_vps, "bot_token": bot_token}))
+
 PY
-)" || { echo "$out"; die "User creation failed."; }
+    )
+    }
+    out="$(_omega_run_user_py)"; rc=$?
+    if [[ $rc -eq 3 ]]; then
+        warn "User '${username}' already exists."
+        read -rp "Update this user instead (reset password / admin / max VPS)? [y/N]: " answer || true
+        if [[ "${answer:-}" =~ ^[Yy] ]]; then
+            update_mode=1
+            out="$(_omega_run_user_py)"; rc=$?
+        else
+            die "Nothing changed. Pick another username, or run again and answer y to update."
+        fi
+    fi
+    [[ $rc -eq 0 ]] || { echo "$out"; die "User creation failed."; }
 
     echo
-    ok "Panel user created"
+    ok "Panel user saved"
     "$py" - "$out" <<'PY'
 import json
 import sys
