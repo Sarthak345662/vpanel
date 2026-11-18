@@ -5613,14 +5613,13 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
             <form method="POST" action="/nodes/add">
                 <div class="form-group">
                     <label>Node Name</label>
-                    <input type="text" name="name" class="form-control" placeholder="e.g. US-1" required autocomplete="off">
+                    <input type="text" name="name" class="form-control" placeholder="e.g. US-1" required>
                 </div>
                 <div class="form-group">
-                    <label>VPS / VDS IP</label>
-                    <input type="text" name="hostname" class="form-control" placeholder="e.g. 203.0.113.5" required autocomplete="off">
-                    <small class="text-dim" style="font-size:11px;">That is all. You get one command to paste on that server as root; it installs the stack, starts the agent and connects the node automatically.</small>
+                    <label>VPS IP</label>
+                    <input type="text" name="hostname" class="form-control" placeholder="e.g. 203.0.113.5" required>
+                    <small class="text-dim" style="font-size:11px;">Next step: you get one command and a short token. Paste either one on that VPS and it connects by itself.</small>
                 </div>
-                <input type="hidden" name="node_type" value="auto">
                 <button type="submit" class="btn btn-primary" style="width:100%;">Add Node &amp; Get Command</button>
             </form>
         </div>
@@ -12956,7 +12955,6 @@ def add_local_node():
     flash('Local node added', 'success')
     return redirect(url_for('node_management'))
 NODE_INSTALL_TYPES = {
-    "auto": ("Auto node", "Detects the server: KVM capable hosts get Incus (containers + VMs), the rest get plain LXC."),
     "lxc": ("LXC node", "Plain LXC + Incus container backend. No KVM/QEMU packages are installed."),
     "kvm": ("KVM node", "QEMU/KVM + libvirt, with a /dev/kvm check before the first VM."),
     "incus": ("Incus node", "Full Incus install: system containers and QEMU virtual machines."),
@@ -12995,9 +12993,9 @@ def _omega_node_connect_command(node, node_type=None, panel_url=None, key=None):
         stored_type = node["node_type"]
     except (KeyError, IndexError, TypeError):
         stored_type = None
-    node_type = str(node_type or stored_type or "auto").strip().lower()
+    node_type = str(node_type or stored_type or "lxc").strip().lower()
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = "auto"
+        node_type = "lxc"
     panel_url = str(panel_url or _omega_panel_public_url()).rstrip("/")
     key = key or _omega_node_enroll_key()
     try:
@@ -13016,6 +13014,62 @@ def _omega_node_connect_command(node, node_type=None, panel_url=None, key=None):
     )
 
 
+def _omega_node_connect_token(node, node_type=None, panel_url=None, key=None):
+    """Short paste-able token that carries everything the VPS needs to connect."""
+    import base64 as _b64
+    try:
+        stored_type = node["node_type"]
+    except (KeyError, IndexError, TypeError):
+        stored_type = None
+    node_type = str(node_type or stored_type or "lxc").strip().lower()
+    if node_type not in NODE_INSTALL_TYPES:
+        node_type = "lxc"
+    try:
+        node_url = str(node["node_url"] or "").rstrip("/")
+        host = str(node["hostname"] or "")
+        name = str(node["name"])
+    except (KeyError, IndexError, TypeError):
+        node_url, host, name = "", "", "node-1"
+    if not node_url:
+        node_url = f"http://{host}:5001"
+    payload = {"p": str(panel_url or _omega_panel_public_url()).rstrip("/"),
+               "k": key or _omega_node_enroll_key(), "n": name, "u": node_url, "t": node_type}
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return _b64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _omega_node_token_command(node, node_type=None):
+    return ("curl -fsSL https://raw.githubusercontent.com/Sarthak345662/vpanel/main/omega.sh "
+            "| sudo bash -s -- --node-connect --token "
+            + _omega_node_connect_token(node, node_type))
+
+
+@app.route('/nodes/type/<int:node_id>', methods=['POST'])
+@admin_required
+def node_set_type(node_id):
+    """Change the stack of a pending node; returns the refreshed command + token."""
+    data = request.get_json(silent=True) or request.form
+    node_type = str(data.get('node_type') or 'lxc').strip().lower()
+    if node_type in ('vm', 'qemu', 'incus-vm'):
+        node_type = 'kvm'
+    if node_type not in NODE_INSTALL_TYPES:
+        return jsonify({'error': 'Unknown node type'}), 400
+    conn = get_db()
+    try:
+        node = conn.execute('SELECT * FROM nodes WHERE id = ?', (node_id,)).fetchone()
+        if not node or node['is_local']:
+            return jsonify({'error': 'Node not found'}), 404
+        conn.execute('UPDATE nodes SET node_type = ? WHERE id = ?', (node_type, node_id))
+        conn.commit()
+        node = conn.execute('SELECT * FROM nodes WHERE id = ?', (node_id,)).fetchone()
+    finally:
+        conn.close()
+    return jsonify({'node_type': node_type,
+                    'command': _omega_node_connect_command(node, node_type),
+                    'token': _omega_node_connect_token(node, node_type),
+                    'token_command': _omega_node_token_command(node, node_type)})
+
+
 @app.route('/nodes/add', methods=['POST'])
 @admin_required
 def add_node():
@@ -13027,11 +13081,11 @@ def add_node():
     """
     name = (request.form.get('name') or '').strip()
     address = (request.form.get('hostname') or request.form.get('ip') or '').strip()
-    node_type = (request.form.get('node_type') or 'auto').strip().lower()
+    node_type = (request.form.get('node_type') or 'lxc').strip().lower()
     if node_type in ('vm', 'qemu', 'incus-vm'):
         node_type = 'kvm'
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = 'auto'
+        node_type = 'lxc'
     port = re.sub(r'\D', '', request.form.get('node_port') or '') or '5001'
     max_vps = request.form.get('max_vps', 500)
     api_key = (request.form.get('api_key') or '').strip()
@@ -13068,7 +13122,7 @@ def add_node():
     conn.commit()
     conn.close()
     add_log('info', f'Node {name} ({address}) registered as {node_type} ({status})', 'node')
-    flash(f'Node {name} added. Run the command below on {address} (as root) - it installs the stack, starts the agent and connects itself.', 'success')
+    flash(f'Node {name} added. Run the command below on {address} to finish the connection.', 'success')
     return redirect(url_for('node_connect_page', node_id=node_id))
 
 
@@ -13082,15 +13136,17 @@ def node_connect_page(node_id):
         flash('Node not found', 'error')
         return redirect(url_for('node_management'))
     try:
-        node_type = str(node['node_type'] or 'auto').lower()
+        node_type = str(node['node_type'] or 'lxc').lower()
     except (KeyError, IndexError):
-        node_type = 'auto'
+        node_type = 'lxc'
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = 'auto'
+        node_type = 'lxc'
     return render_template(
         'node_connect.html', node=node, node_type=node_type,
         install_types=NODE_INSTALL_TYPES,
         command=_omega_node_connect_command(node, node_type),
+        token=_omega_node_connect_token(node, node_type),
+        token_command=_omega_node_token_command(node, node_type),
         enroll_key=_omega_node_enroll_key(),
         panel_url=_omega_panel_public_url(),
     )
@@ -13103,11 +13159,11 @@ def node_command_preview():
     data = request.get_json(silent=True) or request.form
     name = str(data.get('name') or 'node-1').strip()
     address = str(data.get('ip') or data.get('hostname') or '').strip()
-    node_type = str(data.get('node_type') or 'auto').strip().lower()
+    node_type = str(data.get('node_type') or 'lxc').strip().lower()
     if node_type in ('vm', 'qemu', 'incus-vm'):
         node_type = 'kvm'
     if node_type not in NODE_INSTALL_TYPES:
-        node_type = 'auto'
+        node_type = 'lxc'
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{1,63}', name):
         return jsonify({'error': 'Invalid node name'}), 400
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.:-]{2,253}', address):
@@ -13198,16 +13254,21 @@ canvas{position:fixed;inset:0;pointer-events:none;z-index:5}
 <p class="sub">Run the command on {{ node['hostname'] }}. This page turns green automatically when the node reports in.</p></div>
 <span class="pill {{ 'on' if node['status'] == 'online' else '' }}" id="statePill"><span class="dot"></span><span id="stateText">{{ node['status']|upper }}</span></span></div>
 
-<div class="card"><h2>1 · Stack (auto-detected on the server)</h2>
+<div class="card"><h2>1 · Choose the virtualisation stack</h2>
 <div class="types">{% for key, meta in install_types.items() %}
-<div class="type {{ 'sel' if key == node_type else '' }}"><b>{{ meta[0] }}</b>{{ meta[1] }}</div>
+<div class="type {{ 'sel' if key == node_type else '' }}" data-type="{{ key }}" onclick="pickType('{{ key }}')" style="cursor:pointer"><b>{{ meta[0] }}</b>{{ meta[1] }}</div>
 {% endfor %}</div>
-<p class="sub" style="margin-top:10px">Selected: <b>{{ install_types[node_type][0] }}</b> · the command below installs exactly this stack.</p></div>
+<p class="sub" style="margin-top:10px">Selected: <b id="typeName">{{ install_types[node_type][0] }}</b> · click another card to change it; the command and token below update instantly.</p></div>
 
-<div class="card"><h2>2 · Run this on the new VPS as root</h2>
-<p class="sub" style="margin:-4px 0 10px">SSH into {{ node['hostname'] }} and paste it. Nothing else to install or edit.</p>
+<div class="card"><h2>2 · Paste this on the VPS ({{ node['hostname'] }})</h2>
+<p class="sub" style="margin:0 0 8px">Option A · short command with token</p>
+<pre id="tokcmd">{{ token_command }}</pre>
+<div class="row" style="margin-bottom:16px"><button onclick="copyEl('tokcmd',this)">Copy command</button><button class="ghost" onclick="copyEl('tok',this)">Copy token only</button></div>
+<p class="sub" style="margin:0 0 8px">Token (for <code>sudo bash omega.sh --node-connect --token TOKEN</code>)</p>
+<pre id="tok" style="min-height:0">{{ token }}</pre>
+<p class="sub" style="margin:16px 0 8px">Option B · full command with every value visible</p>
 <pre id="cmd">{{ command }}</pre>
-<div class="row"><button onclick="copyCmd()">Copy command</button>
+<div class="row"><button onclick="copyEl('cmd',this)">Copy command</button>
 <button class="ghost" onclick="location.reload()">Refresh status</button>
 <a class="ghost" href="{{ url_for('node_management') }}" style="text-decoration:none;padding:10px 16px;border:1px solid #294260;border-radius:10px;color:#cfe2f4">All nodes</a></div>
 <div class="bar"><i></i></div></div>
@@ -13227,8 +13288,17 @@ canvas{position:fixed;inset:0;pointer-events:none;z-index:5}
 <p class="sub" style="margin-top:22px">Ticket: the same command is available in <a href="{{ url_for('node_management') }}">Nodes</a> and in the CLI menu <code>sudo bash omega.sh --node-types</code>.</p>
 </div><script>
 const NODE_ID={{ node['id'] }};
-function copyCmd(){const t=document.getElementById('cmd').innerText.trim();
- navigator.clipboard.writeText(t).then(()=>{const b=document.querySelector('button');const o=b.innerText;b.innerText='Copied ✓';setTimeout(()=>b.innerText=o,1400)})}
+function copyEl(id,b){const t=document.getElementById(id).innerText.trim();
+ navigator.clipboard.writeText(t).then(()=>{const o=b.innerText;b.innerText='Copied ✓';setTimeout(()=>b.innerText=o,1400)})}
+async function pickType(t){
+ try{const r=await fetch('/nodes/type/'+NODE_ID,{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({node_type:t})});
+  if(!r.ok)return;const j=await r.json();
+  document.getElementById('cmd').innerText=j.command;
+  document.getElementById('tokcmd').innerText=j.token_command;
+  document.getElementById('tok').innerText=j.token;
+  document.querySelectorAll('.type').forEach(e=>e.classList.toggle('sel',e.dataset.type===j.node_type));
+  const n=document.querySelector('.type.sel b');if(n)document.getElementById('typeName').innerText=n.innerText;
+ }catch(e){}}
 function mark(i,done){const el=document.getElementById('s'+i);if(!el)return;
  el.classList.remove('active');el.classList.add(done?'done':'active')}
 async function poll(){
