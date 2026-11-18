@@ -517,23 +517,10 @@ node_type_menu() {
     esac
 }
 
-resolve_node_type() {
-    case "${1:-auto}" in
-        auto|"")
-            if [[ -e /dev/kvm ]]; then echo incus; else echo lxc; fi ;;
-        lxc|kvm|incus) echo "$1" ;;
-        *) echo lxc ;;
-    esac
-}
-
 install_node_type() {
     local type="$1"
     need_root
     need_systemd
-    if [[ "$type" == "auto" ]]; then
-        type="$(resolve_node_type auto)"
-        say "Auto-detected stack for this server: ${type}"
-    fi
     case "$type" in
         lxc)   say "Installing an LXC node (plain LXC + Incus container backend, no KVM packages)" ;;
         kvm)   say "Installing a KVM node (QEMU/KVM + libvirt, /dev/kvm verified)" ;;
@@ -580,7 +567,7 @@ node_status() {
 
 node_connect() {
     need_systemd
-    local panel="" enroll_key="" node_name="" node_url="" node_bind="" node_type="auto" panel_host
+    local panel="" enroll_key="" node_name="" node_url="" node_bind="" node_type="lxc" node_token="" panel_host
 
     # Non-interactive flags (used by the panel's generated one-line command).
     while [[ $# -gt 0 ]]; do
@@ -591,9 +578,28 @@ node_connect() {
             --url) node_url="${2:-}"; shift 2 ;;
             --type) node_type="${2:-}"; shift 2 ;;
             --bind) node_bind="${2:-}"; shift 2 ;;
+            --token) node_token="${2:-}"; shift 2 ;;
             *) shift ;;
         esac
     done
+
+    # One paste-able token (from Admin -> Nodes -> Add Node) carries panel URL,
+    # enrollment key, node name, node URL and stack type.
+    if [[ -n "${node_token:-}" ]]; then
+        local _decoded
+        _decoded="$(python3 - "$node_token" <<'PY' 2>/dev/null
+import base64, json, sys
+raw = sys.argv[1].strip()
+raw += "=" * (-len(raw) % 4)
+data = json.loads(base64.urlsafe_b64decode(raw.encode()).decode())
+for k in ("p", "k", "n", "u", "t"):
+    print(str(data.get(k, "")).replace("\n", " ").replace("\r", " "))
+PY
+)" || true
+        [[ "$(printf '%s\n' "$_decoded" | wc -l)" -ge 5 ]] || die "The node token is invalid. Copy it again from Admin -> Nodes -> Add Node."
+        { IFS= read -r panel; IFS= read -r enroll_key; IFS= read -r node_name; IFS= read -r node_url; IFS= read -r node_type; } <<<"$_decoded"
+        [[ "$panel" =~ ^https?:// ]] || die "The node token has no valid panel URL."
+    fi
 
     if [[ -z "$panel" ]]; then
         echo
@@ -605,37 +611,16 @@ node_connect() {
         read -rp "Enrollment key: " enroll_key || true
         read -rp "Node name [$(hostname -s 2>/dev/null || hostname)]: " node_name || true
         node_name="${node_name:-$(hostname -s 2>/dev/null || hostname)}"
-        read -rp "Node type (auto/lxc/kvm/incus) [auto]: " node_type || true
-        node_type="${node_type:-auto}"
+        read -rp "Node type (lxc/kvm/incus) [lxc]: " node_type || true
+        node_type="${node_type:-lxc}"
     fi
     [[ -n "${enroll_key:-}" ]] || die "Enrollment key is required (Admin -> Nodes -> Add Node)."
     node_name="${node_name:-$(hostname -s 2>/dev/null || hostname)}"
-    case "$node_type" in
-        lxc|kvm|incus) ;;
-        auto|"") node_type="auto" ;;
-        *) warn "Unknown type '$node_type', using auto"; node_type="auto" ;;
-    esac
-    # The stack is decided on the node, not in the panel: a KVM capable server
-    # gets Incus (containers + VMs), anything else plain LXC.
-    if [[ "$node_type" == "auto" ]]; then
-        node_type="$(resolve_node_type auto)"
-        say "Auto-detected stack for this server: ${node_type}"
-    fi
+    case "$node_type" in lxc|kvm|incus) ;; *) warn "Unknown type '$node_type', using lxc"; node_type=lxc ;; esac
 
     panel_host="$(printf '%s' "$panel" | sed -E 's#^https?://([^/:]+).*#\1#')"
-    # The panel's command always carries the node URL, so a node on another
-    # server must listen beyond loopback even when the panel was opened through
-    # localhost (otherwise the panel can never reach it).
-    node_host=""
-    if [[ -n "${node_url:-}" ]]; then
-        node_host="$(printf '%s' "$node_url" | sed -E 's#^https?://([^/:]+).*#\1#')"
-    fi
-    node_is_remote=0
-    if [[ -n "$node_host" && "$node_host" != "127.0.0.1" && "$node_host" != "localhost" && "$node_host" != "::1" ]]; then
-        node_is_remote=1
-    fi
     if [[ -z "${node_bind:-}" ]]; then
-        if [[ "$node_is_remote" -eq 0 ]] && { [[ "$panel_host" == "127.0.0.1" || "$panel_host" == "localhost" ]]; }; then
+        if [[ "$panel_host" == "127.0.0.1" || "$panel_host" == "localhost" ]]; then
             node_bind="127.0.0.1"
         else
             node_bind="0.0.0.0"
@@ -701,9 +686,8 @@ create_panel_user() {
     [[ -x "$py" ]] || die "Panel is not installed (missing ${py}). Choose Install first."
     [[ -f "${INSTALL_DIR}/app.py" ]] || die "Panel code is missing in ${INSTALL_DIR}."
 
-    local out rc update_mode=0 answer
-    _omega_run_user_py() {
-        (cd "$INSTALL_DIR" && { set -a; [[ -r /etc/omega-panel/omega.env ]] && . /etc/omega-panel/omega.env; set +a; true; } && OMEGA_USER_UPDATE="$update_mode" OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
+    local out
+    out="$(cd "$INSTALL_DIR" && OMEGA_DATA_DIR="${OMEGA_DATA_DIR:-/var/lib/omega-panel}" "$py" - "$username" "$email" "$password" "$is_admin" "$max_vps" <<'PY'
 import json
 import secrets
 import sys
@@ -721,29 +705,9 @@ except Exception:
     pass
 conn = panel.get_db()
 columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-if existing:
-    import os
-    if os.environ.get("OMEGA_USER_UPDATE") != "1":
-        print(json.dumps({"error": f"user '{username}' already exists", "exists": True}))
-        raise SystemExit(3)
-    # Update mode: reset password, role and limits of the existing user.
-    sets = ["password = ?", "is_admin = ?"]
-    vals = [panel.hash_password(password), is_admin]
-    if "role" in columns:
-        sets.append("role = ?")
-        vals.append("admin" if is_admin else "user")
-    if "max_vps" in columns:
-        sets.append("max_vps = ?")
-        vals.append(max_vps)
-    vals.append(username)
-    conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE username = ?", vals)
-    conn.commit()
-    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-    conn.close()
-    print(json.dumps({"id": row[0], "username": username, "admin": bool(is_admin),
-                      "max_vps": max_vps, "bot_token": None, "updated": True}))
-    raise SystemExit(0)
+if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+    print(json.dumps({"error": f"user '{username}' already exists"}))
+    raise SystemExit(1)
 fields = ["username", "email", "password", "is_admin", "api_key"]
 values = [username, email, panel.hash_password(password), is_admin, panel.generate_api_key()]
 if "role" in columns:
@@ -765,27 +729,11 @@ row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetch
 conn.close()
 print(json.dumps({"id": row["id"], "username": username, "admin": bool(is_admin),
                   "max_vps": max_vps, "bot_token": bot_token}))
-
 PY
-    )
-    }
-    out="$(_omega_run_user_py)" && rc=0 || rc=$?
-    if [[ $rc -eq 3 ]]; then
-        warn "User '${username}' already exists."
-        read -rp "Update this user instead (reset password / admin / max VPS)? [y/N]: " answer || true
-        if [[ "${answer:-}" =~ ^[Yy] ]]; then
-            update_mode=1
-            out="$(_omega_run_user_py)" && rc=0 || rc=$?
-        else
-            die "Nothing changed. Pick another username, or run again and answer y to update."
-        fi
-    fi
-    [[ $rc -eq 0 ]] || { echo "$out"; die "User creation failed."; }
-    # keep the DB files owned like the data dir so the panel service can still write them
-    chown --reference=/var/lib/omega-panel /var/lib/omega-panel/omega.db* 2>/dev/null || true
+)" || { echo "$out"; die "User creation failed."; }
 
     echo
-    ok "Panel user saved"
+    ok "Panel user created"
     "$py" - "$out" <<'PY'
 import json
 import sys
@@ -1043,27 +991,15 @@ NODE_CONNECT_ARGS=()
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --type=*)
-            NODE_TYPE_ARG="${1#*=}"
-            NODE_CONNECT_ARGS+=("--type" "${1#*=}")
-            shift ;;
-        --type)
-            NODE_TYPE_ARG="${2:-}"
-            NODE_CONNECT_ARGS+=("--type" "${2:-}")
-            shift 2 ;;
-        --node-connect) NODE_CONNECT_ARGS+=("--node-connect"); shift ;;
-        --panel|--key|--name|--url|--bind)
+        --type=*) NODE_TYPE_ARG="${1#*=}"; shift ;;
+        --type) NODE_TYPE_ARG="${2:-}"; shift 2 ;;
+        --node-connect) NODE_CONNECT_ARGS+=("--node-connect"); POSITIONAL+=("--node-connect"); shift ;;
+        --panel|--key|--name|--url|--bind|--token)
             NODE_CONNECT_ARGS+=("$1" "${2:-}"); shift 2 ;;
         *) POSITIONAL+=("$1"); shift ;;
     esac
 done
 set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
-# The panel's one-line command is flags only (--node-connect --panel ... --key ...),
-# so POSITIONAL is empty and the dispatcher used to fall through to the menu,
-# which then exited with "No interactive terminal" without connecting anything.
-if [[ -z "${1:-}" ]] && (( ${#NODE_CONNECT_ARGS[@]} > 0 )); then
-    set -- "${NODE_CONNECT_ARGS[@]}"
-fi
 
 case "${1:-}" in
     --install) shift; install_panel "$@" ;;
@@ -1071,6 +1007,8 @@ case "${1:-}" in
     --node) node_connect ;;
     --node-connect)
         shift
+        # --type is parsed above; hand it on, otherwise every node became "lxc".
+        [[ -n "$NODE_TYPE_ARG" ]] && NODE_CONNECT_ARGS+=("--type" "$NODE_TYPE_ARG")
         node_connect "${NODE_CONNECT_ARGS[@]+"${NODE_CONNECT_ARGS[@]}"}" ;;
     --node-install) install_node_type "${NODE_TYPE_ARG:-lxc}" ;;
     --node-types|--nodes) node_type_menu ;;
@@ -1094,8 +1032,8 @@ Usage: sudo bash omega.sh [option]
   --uninstall        stop and remove the panel services
   --node             install this host as a node and connect it (guided)
   --node-connect     non-interactive connect, needs:
-                       --panel URL --key KEY --name NAME --url NODE_URL [--type auto|lxc|kvm|incus]
-  --node-install     install only the node stack: --type auto | lxc | kvm | incus
+                       --panel URL --key KEY --name NAME --url NODE_URL [--type lxc|kvm|incus]
+  --node-install     install only the node stack: --type lxc | kvm | incus
   --node-types       interactive node install menu
   --node-status      show incus / qemu / lxc / kvm capabilities
   --create-user      create a panel user from the CLI
