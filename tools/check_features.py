@@ -475,7 +475,9 @@ modal = panel.EMBEDDED_TEMPLATES["nodes.html"].split('id="addNodeModal"')[1] \
 check("add-node form asks only for a name and the VPS IP",
       'name="name"' in modal and 'name="hostname"' in modal
       and 'name="node_port"' not in modal and 'name="max_vps"' not in modal, "")
-check("add-node form hides the stack choice", 'value="auto"' in modal, "")
+check("add-node form leaves the stack to the server",
+      "auto" in panel.NODE_INSTALL_TYPES
+      and "or 'auto'" in _inspect.getsource(panel.add_node), "")
 connect_cmd = panel._omega_node_connect_command(
     {"name": "edge-1", "node_url": "http://203.0.113.9:5001",
      "node_type": "auto", "hostname": "203.0.113.9"},
