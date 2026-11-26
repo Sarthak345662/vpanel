@@ -631,6 +631,93 @@ check("installer seed step runs without a traceback",
       seed_proc.returncode == 0 and "Traceback" not in seed_proc.stderr,
       (seed_proc.stderr or "")[-160:])
 
+# 16. Incus VM creation on a profile without a root device / storage pool.
+import importlib
+vt = importlib.import_module("core.vps_types")
+
+
+class _FakeIncus:
+    """Minimal Incus that reproduces the broken default profile."""
+
+    def __init__(self, pool=True, root=True, reject_override=False):
+        self.pool = pool
+        self.root = root
+        self.reject_override = reject_override
+        self.inited = 0
+        self.launches = []
+        self.added_root = 0
+
+    def incus(self, args, timeout=60):
+        if list(args[:2]) == ["storage", "list"]:
+            return 0, ("pool1,zfs\n" if self.pool else "")
+        if list(args[:2]) == ["admin", "init"]:
+            self.inited += 1
+            self.pool = True
+            return 0, "ok"
+        if list(args[:3]) == ["profile", "device", "list"]:
+            return 0, ("root\n" if self.root else "")
+        if list(args[:3]) == ["profile", "device", "get"]:
+            return 0, ("disk" if list(args[4:5]) == ["type"] else "/")
+        if list(args[:3]) == ["profile", "device", "add"]:
+            self.added_root += 1
+            self.root = True
+            return 0, "Device root added to default"
+        if args and args[0] == "image":
+            return 0, "ok"
+        return 0, ""
+
+    def run(self, cmd, timeout=90):
+        if list(cmd[:2]) == ["incus", "launch"]:
+            self.launches.append(list(cmd))
+            if self.reject_override and any("size=" in part for part in cmd):
+                if not any("no-size" in part for part in cmd):
+                    self.reject_override = False
+                    return 1, ('Error: Cannot override config for device "root": '
+                               'Device not found in profile devices')
+            return 0, "Launched"
+        return 0, ""
+
+
+def _create_with(fake):
+    real_incus, real_run, real_cli = vt._incus, vt._run, vt.cli
+    real_supported = getattr(vt, "require_supported", None)
+    vt._incus, vt._run, vt.cli = fake.incus, fake.run, (lambda: "incus")
+    # This runner has no /dev/kvm; the check is about the Incus profile layout.
+    vt.require_supported = lambda vps_type: None
+    try:
+        vt._IMAGE_ALIAS_CACHE.clear()
+        return vt.create_instance("vps-test", "ubuntu/22.04", "kvm", False, 2, 2048, 20)
+    finally:
+        vt._incus, vt._run, vt.cli = real_incus, real_run, real_cli
+        if real_supported is not None:
+            vt.require_supported = real_supported
+
+
+fake = _FakeIncus(pool=False, root=False)
+try:
+    _create_with(fake)
+    created = True
+except Exception as exc:  # noqa: BLE001 - the check reports the real error
+    created = False
+    create_error = str(exc)
+check("kvm create initialises incus when no storage pool exists", fake.inited >= 1, "")
+check("kvm create adds the missing root device to the default profile",
+      fake.added_root >= 1, getattr(fake, "create_error", ""))
+check("kvm create launches with the root size after repairing the profile",
+      bool(fake.launches) and any("-d" in launch and "root,size=20GiB" in " ".join(launch)
+                                  for launch in fake.launches),
+      (fake.launches[-1] if fake.launches else []))
+
+fake2 = _FakeIncus(pool=True, root=True, reject_override=True)
+try:
+    _create_with(fake2)
+    retried = True
+except Exception:  # noqa: BLE001
+    retried = False
+check("kvm create retries without the size override when incus rejects it",
+      retried and len(fake2.launches) >= 2
+      and "-d" not in fake2.launches[-1], [len(fake2.launches)])
+
 print()
 if failures:
     print("FAILURES:", len(failures))

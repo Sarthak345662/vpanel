@@ -43,7 +43,19 @@ def create_instance(name, image, engine, vcpus, memory_mb, disk_gb):
         args=['incus','launch',image_ref,name]
         if engine=='vm': args += ['--vm']
         args += ['-c',f'limits.cpu={int(vcpus)}','-c',f'limits.memory={int(memory_mb)}MiB','-d',f'root,size={int(disk_gb)}GiB']
-        run(args, timeout=600)
+        try:
+            run(args, timeout=600)
+        except EngineError as exc:
+            # A profile without a root disk device (skip of `incus admin init`)
+            # rejects the size override; launch without it instead of failing.
+            text = str(exc).lower()
+            if '-d' in args and ('device not found in profile' in text
+                                 or 'cannot override config' in text
+                                 or 'no storage pool' in text):
+                index = args.index('-d')
+                run(args[:index] + args[index + 2:], timeout=600)
+            else:
+                raise
     wait_ready(name, timeout=180 if engine=='vm' else 90)
     set_hostname(name,name)
     try:

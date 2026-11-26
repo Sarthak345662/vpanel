@@ -186,8 +186,7 @@ def _incus(args: list[str], timeout: int = 60) -> tuple[int, str]:
     return _run([binary, *args], timeout=timeout)
 
 
-def storage_pool() -> tuple[str, str]:
-    """Return ``(pool_name, driver)`` for the pool instances are created on."""
+def _storage_pools() -> list[tuple[str, str]]:
     code, output = _incus(["storage", "list", "--format", "csv", "-c", "nd"], timeout=20)
     pools: list[tuple[str, str]] = []
     if code == 0:
@@ -197,6 +196,12 @@ def storage_pool() -> tuple[str, str]:
                 continue
             driver = parts[1].lower() if len(parts) > 1 else ""
             pools.append((parts[0], driver))
+    return pools
+
+
+def storage_pool() -> tuple[str, str]:
+    """Return ``(pool_name, driver)`` for the pool instances are created on."""
+    pools = _storage_pools()
     if not pools:
         return "default", ""
     for preferred in ("default", "local", "incus", "pool1", "data"):
@@ -214,6 +219,53 @@ def pool_supports_size(driver: str) -> bool:
 def default_profile_exists() -> bool:
     code, _ = _incus(["profile", "show", "default"], timeout=15)
     return code == 0
+
+
+def ensure_storage_available() -> tuple[str, str]:
+    """Return ``(pool, driver)``, initialising Incus storage when it has none.
+
+    A host where ``incus admin init`` never finished has an empty ``default``
+    profile and no storage pool, so every launch fails. Initialise once and
+    re-read instead of dropping the request on the user.
+    """
+    if not _storage_pools():
+        for init_args in (["admin", "init", "--auto"], ["admin", "init", "--minimal"]):
+            code, _output = _incus(init_args, timeout=420)
+            if code == 0:
+                break
+    if not _storage_pools():
+        raise VpsTypeError(
+            "Incus has no storage pool, so a VPS cannot be created. Run "
+            "'sudo incus admin init --auto' on this node and try again."
+        )
+    return storage_pool()
+
+
+def profile_disk_device(profile: str = "default") -> str:
+    """Name of the profile's root disk device, or ``""`` when it has none.
+
+    ``incus launch -d root,size=...`` only works when the profile already
+    declares that device; a host whose ``incus admin init`` was skipped failed
+    every KVM create with ``Cannot override config for device "root": Device
+    not found in profile devices``.
+    """
+    code, output = _incus(["profile", "device", "list", profile, "--format", "csv", "-c", "n"],
+                          timeout=20)
+    if code != 0:
+        return ""
+    for raw in output.splitlines():
+        name = raw.strip().strip('"')
+        if not name:
+            continue
+        type_code, device_type = _incus(["profile", "device", "get", profile, name, "type"],
+                                        timeout=15)
+        if type_code != 0 or device_type.strip().strip('"').lower() != "disk":
+            continue
+        path_code, device_path = _incus(["profile", "device", "get", profile, name, "path"],
+                                        timeout=15)
+        if path_code == 0 and device_path.strip().strip('"') in ("/", ""):
+            return name
+    return ""
 
 
 def _local_image_aliases() -> set[str]:
@@ -335,7 +387,15 @@ def create_instance(name: str, image_alias: str, vps_type: str = DEFAULT_TYPE,
             "'sudo incus admin init --auto' and add the service user to the incus-admin "
             "group, then restart the panel."
         )
-    pool_name, pool_driver = storage_pool()
+    pool_name, pool_driver = ensure_storage_available()
+    # The launch override needs a root disk device that the profile really has.
+    root_device = profile_disk_device("default")
+    if not root_device:
+        add_code, add_output = _incus(
+            ["profile", "device", "add", "default", "root", "disk", "path=/",
+             f"pool={pool_name}"], timeout=60)
+        if add_code == 0 or "already exists" in add_output.lower():
+            root_device = "root"
     image_ref = vm_image_ref(image_alias) if vps_type == "kvm" else container_image_ref(image_alias)
     ok, image_output = ensure_image(image_ref)
     if not ok:
@@ -355,12 +415,14 @@ def create_instance(name: str, image_alias: str, vps_type: str = DEFAULT_TYPE,
     if vps_type == "lxc":
         # Matches the behaviour of the existing container creation path.
         args += ["-c", "security.privileged=true"]
-    if pool_supports_size(pool_driver):
-        args += ["-d", f"root,size={int(disk_gb)}GiB"]
+    if pool_supports_size(pool_driver) and root_device:
+        args += ["-d", f"{root_device},size={int(disk_gb)}GiB"]
     code, output = _run(args, timeout=900)
     lowered = output.lower()
-    if code != 0 and "-d" in args and "root,size=" in " ".join(args) and \
-            "size" in lowered and ("not support" in lowered or "custom" in lowered):
+    if code != 0 and "-d" in args and (
+            "device not found in profile" in lowered
+            or "cannot override config" in lowered
+            or ("size" in lowered and ("not support" in lowered or "custom" in lowered))):
         # Some storage drivers reject a per-instance root size: retry without it.
         index = args.index("-d")
         args = args[:index] + args[index + 2:]
@@ -379,6 +441,14 @@ def create_instance(name: str, image_alias: str, vps_type: str = DEFAULT_TYPE,
     if code != 0:
         # A failed launch can leave a half-created instance behind.
         _run([binary, "delete", name, "--force"], timeout=60)
+        if vps_type == "kvm" and ("kvm support is missing" in lowered
+                                  or "kvm not available" in lowered
+                                  or "no kvm" in lowered):
+            raise VpsTypeError(
+                "This host cannot run KVM virtual machines: /dev/kvm exists but the CPU "
+                "does not provide usable hardware virtualisation (common inside another "
+                "VM). Create an LXC or Non-KVM (QEMU TCG) VPS instead."
+            )
         raise VpsTypeError(f"Instance creation failed ({vps_type}): {output[-1200:]}")
     # Some images ignore the launch -c flag; make the nesting state explicit.
     set_nesting(name, vps_type, bool(nesting))
