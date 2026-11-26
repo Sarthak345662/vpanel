@@ -173,34 +173,34 @@ export PYTHONPATH="$INSTALL_DIR"
 import os
 import secrets
 
-from app import init_db, migrate_nodes, get_db, hash_password, generate_api_key
+from app import (init_db, migrate_nodes, get_db, ensure_default_admin,
+                 DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_EMAIL)
 
 init_db()
 migrate_nodes()
 
+# admin / admin / admin@gmail.com is the documented default. The helper only
+# creates a missing admin and never resets an existing password.
+created = ensure_default_admin()
+username = os.environ.get('OMEGA_ADMIN_USER') or DEFAULT_ADMIN_USERNAME
+password = os.environ.get('OMEGA_ADMIN_PASSWORD') or DEFAULT_ADMIN_PASSWORD
+email = (os.environ.get('OMEGA_ADMIN_EMAIL') or DEFAULT_ADMIN_EMAIL).strip().lower()
+
 conn = get_db()
-admin = conn.execute("SELECT id FROM users WHERE is_admin=1").fetchone()
+admin = conn.execute("SELECT username,email FROM users WHERE is_admin=1 ORDER BY id LIMIT 1").fetchone()
+conn.close()
 if admin:
-    print('[Vizion V4] Existing admin account detected; no credentials changed.')
+    print(f"[Vizion V4] Admin account: {admin['username']} <{admin['email']}>")
 else:
-    username = os.environ.get('OMEGA_ADMIN_USER', 'admin')
-    password = os.environ.get('OMEGA_ADMIN_PASSWORD') or 'admin'
-    conn.execute(
-        "INSERT INTO users(username,email,password,is_admin,api_key) VALUES(?,?,?,?,?)",
-        (username, os.environ.get('OMEGA_ADMIN_EMAIL', 'admin@vps.local'),
-         hash_password(password), 1, generate_api_key()),
-    )
-    conn.commit()
+    print('[Vizion V4] WARNING: no admin account exists; check the panel database permissions.')
+if created:
     credentials_file = '/var/lib/omega-panel/first_admin_credentials.txt'
     os.makedirs(os.path.dirname(credentials_file), exist_ok=True)
     with open(credentials_file, 'w', encoding='utf-8') as fh:
-        fh.write(f"username: {username}\npassword: {password}\n")
+        fh.write(f"username: {username}\npassword: {password}\nemail: {email}\n")
     os.chmod(credentials_file, 0o600)
-    print(f"[Vizion V4] First admin: {username}")
-    print(f"[Vizion V4] Random password: {password}")
+    print(f"[Vizion V4] First admin created: {username} / {password} / {email}")
     print(f"[Vizion V4] Credentials file: {credentials_file}")
-    if password == 'admin':
-        print('[Vizion V4] WARNING: default login is admin/admin. Change it after the first login.')
 
 local = conn.execute("SELECT id FROM nodes WHERE is_local=1 LIMIT 1").fetchone()
 if not local:

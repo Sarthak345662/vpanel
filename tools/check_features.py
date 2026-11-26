@@ -548,6 +548,71 @@ bad = client.post("/api/nodes/enroll",
                   headers={"X-Omega-Enroll": "wrong-key"})
 check("enrollment rejects a wrong enrollment key", bad.status_code == 403, "")
 
+# 14. Accounts: default admin, login by username/email and admin user creation.
+conn = panel.get_db()
+admin_row = conn.execute("SELECT * FROM users WHERE is_admin=1 ORDER BY id LIMIT 1").fetchone()
+conn.close()
+check("default admin is admin / admin / admin@gmail.com",
+      bool(admin_row) and admin_row["username"] == "admin"
+      and admin_row["email"] == "admin@gmail.com"
+      and panel.verify_password(admin_row["password"], "admin"), "")
+login_client = panel.app.test_client()
+resp = login_client.post("/login", data={"username": "admin@gmail.com", "password": "admin"})
+check("login accepts the admin email address",
+      resp.headers.get("Location", "").endswith("/admin"), resp.status_code)
+resp = login_client.post("/login", data={"username": "ADMIN", "password": "admin"})
+check("login ignores the case of a username",
+      resp.headers.get("Location", "").endswith("/admin"), resp.status_code)
+
+from werkzeug.security import generate_password_hash
+conn = panel.get_db()
+conn.execute("DELETE FROM users WHERE username='legacy1'")
+conn.execute("INSERT INTO users (username,email,password) VALUES (?,?,?)",
+             ("legacy1", "legacy1@example.com", generate_password_hash("legacy1pw")))
+conn.commit()
+conn.close()
+legacy_client = panel.app.test_client()
+resp = legacy_client.post("/login", data={"username": "legacy1", "password": "legacy1pw"})
+check("an account with an older scrypt password still logs in",
+      resp.headers.get("Location", "").endswith("/dashboard"), resp.status_code)
+
+admin_client = panel.app.test_client()
+admin_client.post("/login", data={"username": "admin", "password": "admin"})
+page = admin_client.get("/admin/users")
+check("users page offers a create-user form",
+      page.status_code == 200 and 'action="/admin/users/create"' in page.get_data(as_text=True),
+      page.status_code)
+admin_client.post("/admin/users/create",
+                  data={"username": "paneluser", "email": "paneluser@gmail.com",
+                        "password": "paneluser1"})
+conn = panel.get_db()
+created = conn.execute("SELECT * FROM users WHERE username='paneluser'").fetchone()
+conn.close()
+check("admin create user stores the account",
+      bool(created) and created["email"] == "paneluser@gmail.com", "")
+new_client = panel.app.test_client()
+resp = new_client.post("/login", data={"username": "paneluser@gmail.com", "password": "paneluser1"})
+check("the created user can log in with its email",
+      resp.headers.get("Location", "").endswith("/dashboard"), resp.status_code)
+admin_client.post("/admin/users/create",
+                  data={"username": "paneluser", "email": "other@gmail.com",
+                        "password": "paneluser1"})
+conn = panel.get_db()
+count = conn.execute("SELECT COUNT(*) c FROM users WHERE lower(username)='paneluser'").fetchone()["c"]
+conn.close()
+check("a duplicate username is not created twice", count == 1, count)
+
+reg_client = panel.app.test_client()
+reg_client.post("/register", data={"username": "RegUser", "email": "reg@example.com",
+                                   "password": "regpass1", "confirm_password": "regpass1"})
+conn = panel.get_db()
+row = conn.execute("SELECT username FROM users WHERE lower(username)='reguser'").fetchone()
+conn.close()
+check("registration stores the account", bool(row), "")
+resp = reg_client.post("/login", data={"username": "reguser", "password": "regpass1"})
+check("a registered user can log in in another case",
+      bool(row) and resp.headers.get("Location", "").endswith("/dashboard"), resp.status_code)
+
 print()
 if failures:
     print("FAILURES:", len(failures))

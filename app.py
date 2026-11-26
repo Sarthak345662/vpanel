@@ -6020,6 +6020,38 @@ EMBEDDED_TEMPLATES = {'icons.html': """<svg xmlns="http://www.w3.org/2000/svg" s
                     </div>
                 </div>
 
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}{% for category, message in messages %}
+                <div class="fade-in" style="margin-bottom:14px;padding:12px 14px;border-radius:10px;border:1px solid var(--border);background:var(--bg-card);color:{% if category == 'error' %}#f87171{% elif category == 'success' %}#34d399{% else %}var(--text){% endif %}">{{ message }}</div>
+                {% endfor %}{% endif %}
+                {% endwith %}
+
+                <div class="card fade-in" style="margin-bottom:16px">
+                    <div class="card-title">
+                        <svg width="18" height="18"><use href="#icon-user"/></svg>
+                        Create User
+                    </div>
+                    <form method="POST" action="/admin/users/create" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;align-items:end;">
+                        <div>
+                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;">Username</label>
+                            <input type="text" name="username" class="form-control" placeholder="e.g. rahul" required autocomplete="off">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;">Email</label>
+                            <input type="email" name="email" class="form-control" placeholder="user@gmail.com" required autocomplete="off">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:12px;color:var(--text-muted);margin-bottom:6px;">Password</label>
+                            <input type="text" name="password" class="form-control" placeholder="Min 6 characters" required autocomplete="off">
+                        </div>
+                        <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);padding-bottom:10px;">
+                            <input type="checkbox" name="is_admin" value="1"> Admin
+                        </label>
+                        <button type="submit" class="btn btn-primary">Create User</button>
+                    </form>
+                    <p class="page-header-sub" style="margin:10px 0 0;font-size:12px;">The account is saved immediately and can log in with its username or email.</p>
+                </div>
+
                 <div class="stat-cards fade-in">
                     <div class="stat-card">
                         <div class="stat-icon blue">
@@ -10540,6 +10572,30 @@ def init_db():
     conn.close()
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
+
+def verify_password(stored, password):
+    """Check a password against every hash format this panel has stored.
+
+    Older builds (and core/db.py) wrote werkzeug scrypt hashes while the current
+    code writes a sha256 hex digest. Comparing the two as plain strings made
+    those accounts impossible to log in to, however often they were created.
+    """
+    stored = str(stored or "")
+    if not stored:
+        return False
+    if ":" in stored or stored.startswith(("scrypt", "pbkdf2", "argon2")):
+        try:
+            from werkzeug.security import check_password_hash
+            return bool(check_password_hash(stored, password or ""))
+        except Exception:
+            return False
+    return hmac.compare_digest(stored, hash_password(password or ""))
+
+
+def _password_needs_upgrade(stored):
+    stored = str(stored or "")
+    return ":" in stored or stored.startswith(("scrypt", "pbkdf2", "argon2"))
 def generate_api_key():
     return 'fwa-' + ''.join(random.choices(string.ascii_lowercase + string.digits, k=32))
 def log_activity(user_id, action, resource=None, details=None, ip_address=None):
@@ -10852,32 +10908,52 @@ def register():
         flash('Registration is currently disabled', 'error')
         return redirect(url_for('login'))
     if request.method == 'POST':
-        username = request.form.get('username')
-        email = request.form.get('email')
-        password = request.form.get('password')
+        username = (request.form.get('username') or '').strip()
+        email = (request.form.get('email') or '').strip().lower()
+        password = request.form.get('password') or ''
         confirm_password = request.form.get('confirm_password')
-        if password != confirm_password:
+        if confirm_password is not None and password != confirm_password:
             flash('Passwords do not match', 'error')
+            return redirect(url_for('register'))
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{2,31}', username):
+            flash('Username must be 3-32 characters: letters, digits, dot, dash or underscore.', 'error')
+            return redirect(url_for('register'))
+        if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[A-Za-z]{2,}', email):
+            flash('Enter a valid email address', 'error')
             return redirect(url_for('register'))
         if len(password) < 6:
             flash('Password must be at least 6 characters', 'error')
             return redirect(url_for('register'))
         conn = get_db()
         try:
-            try:
-                existing = conn.execute('SELECT * FROM users WHERE username = ? OR email = ?', (username, email)).fetchone()
-                if existing:
-                    flash('Username or email already exists', 'error')
-                    return redirect(url_for('register'))
-                conn.execute('INSERT INTO users (username, email, password) VALUES (?, ?, ?)', (username, email, hash_password(password)))
-                conn.commit()
-                user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
-                log_activity(user['id'], 'register', 'auth', json.dumps({'username': username}), request.remote_addr)
-                add_log('info', f"New user registered: {username}", 'auth')
-                flash('Registration successful! Please login.', 'success')
-                return redirect(url_for('login'))
-            except sqlite3.Error as e:
-                flash(f"Registration failed: {str(e)}", 'error')
+            existing = conn.execute(
+                'SELECT id FROM users WHERE lower(username) = lower(?) OR lower(email) = lower(?)',
+                (username, email),
+            ).fetchone()
+            if existing:
+                flash('Username or email already exists', 'error')
+                return redirect(url_for('register'))
+            conn.execute(
+                'INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
+                (username, email, hash_password(password)),
+            )
+            conn.commit()
+            # Read the row back: showing success without a stored row is exactly
+            # the "it says created but the user is missing" report.
+            user = conn.execute(
+                'SELECT id, username FROM users WHERE lower(username) = lower(?)',
+                (username,)).fetchone()
+            if not user:
+                flash('Registration could not be saved. Please try again.', 'error')
+                return redirect(url_for('register'))
+            log_activity(user['id'], 'register', 'auth', json.dumps({'username': user['username']}), request.remote_addr)
+            add_log('info', f"New user registered: {user['username']}", 'auth')
+            flash(f'Account {user["username"]} created. Log in with that username or {email}.', 'success')
+            return redirect(url_for('login'))
+        except sqlite3.Error as exc:
+            conn.rollback()
+            add_log('error', f'Registration failed for {username}: {exc}', 'auth')
+            flash(f'Registration failed: {exc}', 'error')
         finally:
             conn.close()
         return render_template('register.html')
@@ -11025,10 +11101,23 @@ def delete_ticket(ticket_id):
 @limiter.limit(lambda: get_rate_limit('auth'))
 def login():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
+        username = (request.form.get('username') or '').strip()
+        password = request.form.get('password') or ''
         conn = get_db()
-        user = conn.execute('SELECT * FROM users WHERE username = ? AND password = ?', (username, hash_password(password))).fetchone()
+        # People log in with whatever they registered: username or e-mail, and
+        # the old exact-match query rejected "Admin"/"admin@gmail.com" even
+        # though the account existed, which looked like a broken user creation.
+        user = conn.execute(
+            'SELECT * FROM users WHERE lower(username) = lower(?) OR lower(email) = lower(?)',
+            (username, username),
+        ).fetchone()
+        if user and verify_password(user['password'], password):
+            if _password_needs_upgrade(user['password']):
+                conn.execute('UPDATE users SET password = ? WHERE id = ?',
+                             (hash_password(password), user['id']))
+                conn.commit()
+        else:
+            user = None
         conn.close()
         if user:
             if user['is_banned']:
@@ -11091,7 +11180,7 @@ def profile():
         current_password = request.form.get('current_password')
         new_password = request.form.get('new_password')
         confirm_password = request.form.get('confirm_password')
-        if hash_password(current_password) != user['password']:
+        if not verify_password(user['password'], current_password or ''):
             flash('Current password is incorrect', 'error')
         elif new_password and new_password != confirm_password:
             flash('New passwords do not match', 'error')
@@ -12720,6 +12809,58 @@ def admin_users():
     users = conn.execute('SELECT * FROM users ORDER BY created_at DESC').fetchall()
     conn.close()
     return render_template('users.html', users=users)
+
+
+@app.route('/admin/users/create', methods=['POST'])
+@admin_required
+def admin_create_user():
+    """Create a panel login from the Users page.
+
+    There was no create-user action in the panel at all, so an admin could fill
+    a form, get a "created" message and still find nothing in the list. This
+    route validates, inserts, reads the row back and only then reports success.
+    """
+    username = (request.form.get('username') or '').strip()
+    email = (request.form.get('email') or '').strip().lower()
+    password = request.form.get('password') or ''
+    make_admin = 1 if str(request.form.get('is_admin') or '').lower() in ('1', 'on', 'true', 'yes') else 0
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{2,31}', username):
+        flash('Username must be 3-32 characters: letters, digits, dot, dash or underscore.', 'error')
+        return redirect(url_for('admin_users'))
+    if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[A-Za-z]{2,}', email):
+        flash('Enter a valid email address.', 'error')
+        return redirect(url_for('admin_users'))
+    if len(password) < 6:
+        flash('Password must be at least 6 characters.', 'error')
+        return redirect(url_for('admin_users'))
+    conn = get_db()
+    try:
+        clash = conn.execute(
+            'SELECT username, email FROM users WHERE lower(username) = lower(?) OR lower(email) = lower(?)',
+            (username, email)).fetchone()
+        if clash:
+            field = 'username' if str(clash['username']).lower() == username.lower() else 'email'
+            flash(f'That {field} is already registered.', 'error')
+            return redirect(url_for('admin_users'))
+        cursor = conn.execute(
+            'INSERT INTO users (username, email, password, is_admin, api_key) VALUES (?, ?, ?, ?, ?)',
+            (username, email, hash_password(password), make_admin, generate_api_key()))
+        conn.commit()
+        created = conn.execute('SELECT id FROM users WHERE id = ?', (cursor.lastrowid,)).fetchone()
+        if not created:
+            flash('The user was not saved. Check the panel database and try again.', 'error')
+            return redirect(url_for('admin_users'))
+        add_log('info', f'User {username} <{email}> created from the admin panel', 'auth')
+        flash(f'User {username} created (id {cursor.lastrowid}). Log in with that username or {email}.', 'success')
+    except sqlite3.Error as exc:
+        conn.rollback()
+        add_log('error', f'Could not create user {username}: {exc}', 'auth')
+        flash(f'Could not create user: {exc}', 'error')
+    finally:
+        conn.close()
+    return redirect(url_for('admin_users'))
+
+
 @app.route('/admin/promote/<int:user_id>', methods=['POST'])
 @admin_required
 def promote_user(user_id):
@@ -14179,8 +14320,14 @@ def _register_with_email_otp():
     if password != confirm:
         flash("Passwords do not match", "error")
         return redirect(url_for("register"))
-    if len(password) < 8:
-        flash("Password must be at least 8 characters", "error")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,31}", username):
+        flash("Username must be 3-32 characters: letters, digits, dot, dash or underscore.", "error")
+        return redirect(url_for("register"))
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", email):
+        flash("Enter a valid email address", "error")
+        return redirect(url_for("register"))
+    if len(password) < 6:
+        flash("Password must be at least 6 characters", "error")
         return redirect(url_for("register"))
     conn = get_db()
     try:
@@ -14188,7 +14335,11 @@ def _register_with_email_otp():
             "SELECT 1 FROM users WHERE lower(username)=lower(?) OR lower(email)=lower(?)",
             (username, email)
         ).fetchone()
-        if exists:
+        pending_exists = conn.execute(
+            "SELECT 1 FROM pending_registrations WHERE lower(username)=lower(?) OR lower(email)=lower(?)",
+            (username, email)
+        ).fetchone()
+        if exists or pending_exists:
             flash("Username or email already exists", "error")
             return redirect(url_for("register"))
         if _smtp_is_configured():
@@ -14208,15 +14359,20 @@ def _register_with_email_otp():
                 flash("Could not send verification email. Please check SMTP configuration and try again.", "error")
                 return redirect(url_for("register"))
             session["pending_registration_id"] = cur.lastrowid
-            flash("A verification code has been sent to your email.", "success")
+            flash(f"Verification code sent to {email}. The account is created only "
+                  f"after you enter that code on the next page.", "success")
             return redirect(url_for("verify_email"))
         conn.execute(
             "INSERT INTO users (username,email,password) VALUES (?,?,?)",
             (username, email, hash_password(password))
         )
         conn.commit()
-        user = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
-        log_activity(user["id"], "register", "auth", json.dumps({"username": username}), request.remote_addr)
+        user = conn.execute(
+            "SELECT * FROM users WHERE lower(username)=lower(?)", (username,)).fetchone()
+        if not user:
+            flash("Registration could not be saved. Please try again.", "error")
+            return redirect(url_for("register"))
+        log_activity(user["id"], "register", "auth", json.dumps({"username": user["username"]}), request.remote_addr)
         add_log("info", f"New user registered: {username}", "auth")
         flash("Registration successful! Please login.", "success")
         return redirect(url_for("login"))
@@ -15351,7 +15507,16 @@ def omega_login():
         user = conn.execute("SELECT * FROM users WHERE lower(username)=lower(?) OR lower(email)=lower(?)",
                             (username, username)).fetchone()
         conn.close()
-        if user and hmac.compare_digest(str(user["password"]), str(hash_password(password))):
+        # verify_password also accepts the werkzeug scrypt hashes written by
+        # older builds; a plain sha256 comparison locked those accounts out for
+        # good, which looked like "the user was created but cannot log in".
+        if user and verify_password(user["password"], password):
+            if _password_needs_upgrade(user["password"]):
+                conn = get_db()
+                conn.execute("UPDATE users SET password = ? WHERE id = ?",
+                             (hash_password(password), user["id"]))
+                conn.commit()
+                conn.close()
             if user["is_banned"]:
                 flash("Your account has been banned", "error")
                 return redirect(url_for("login"))
@@ -16103,9 +16268,67 @@ if "register.html" in EMBEDDED_TEMPLATES:
 
 # Preserve the previous database initializer and add this generation's schema.
 _previous_init_db = init_db
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin"
+DEFAULT_ADMIN_EMAIL = "admin@gmail.com"
+
+
+def ensure_default_admin():
+    """Guarantee the documented default login: admin / admin / admin@gmail.com.
+
+    The installer created an admin only when the table was empty and used
+    admin@vps.local as its address, so a panel could have no admin at all (or a
+    placeholder address) while the README promised admin/admin. An existing
+    password is never reset here; only a missing admin is created and the old
+    placeholder address is replaced.
+    """
+    username = (os.environ.get("OMEGA_ADMIN_USER") or DEFAULT_ADMIN_USERNAME).strip()
+    password = os.environ.get("OMEGA_ADMIN_PASSWORD") or DEFAULT_ADMIN_PASSWORD
+    email = (os.environ.get("OMEGA_ADMIN_EMAIL") or DEFAULT_ADMIN_EMAIL).strip().lower()
+    conn = get_db()
+    try:
+        admin = conn.execute(
+            "SELECT * FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1").fetchone()
+        if not admin:
+            taken = conn.execute(
+                "SELECT id FROM users WHERE lower(username) = lower(?) OR lower(email) = lower(?)",
+                (username, email)).fetchone()
+            if taken:
+                conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (taken["id"],))
+            else:
+                conn.execute(
+                    "INSERT INTO users (username, email, password, is_admin, api_key)"
+                    " VALUES (?, ?, ?, 1, ?)",
+                    (username, email, hash_password(password), generate_api_key()))
+            conn.commit()
+            app.logger.info("Default admin account ensured: %s", username)
+            return True
+        current_email = str(admin["email"] or "").strip().lower()
+        placeholder = current_email in ("", "admin@vps.local", "admin@example.com",
+                                        "admin@admin.com", "admin@localhost")
+        force_password = bool(os.environ.get("OMEGA_ADMIN_PASSWORD"))
+        if placeholder and (force_password or not verify_password(admin["password"], password)):
+            # Still the installer default (nobody changed the placeholder
+            # address), so make the documented admin/admin login work again
+            # instead of leaving a hash nobody knows.
+            conn.execute("UPDATE users SET password = ? WHERE id = ?",
+                         (hash_password(password), admin["id"]))
+            app.logger.warning("Default admin password restored for %s", admin["username"])
+        if placeholder:
+            conn.execute("UPDATE users SET email = ? WHERE id = ?", (email, admin["id"]))
+            conn.commit()
+        return False
+    finally:
+        conn.close()
+
+
 def init_db():
     _previous_init_db()
     _omega_columns()
+    try:
+        ensure_default_admin()
+    except Exception:
+        app.logger.exception("Could not ensure the default admin account")
 
 
 
@@ -18593,21 +18816,25 @@ except Exception:
     app.logger.exception("Database bootstrap failed during import")
 
 
+# gunicorn imports app:app, so __main__ never runs in production. Run the
+# defaults here too, otherwise an updated panel keeps an entry-less or unknown
+# admin login until someone re-runs the installer by hand.
+try:
+    ensure_default_admin()
+except Exception:
+    app.logger.exception("Could not ensure the default admin account")
+
+
 if __name__ == "__main__":
     init_db()
     try:
         migrate_nodes()
     except Exception:
         app.logger.exception("Node migration failed during startup")
-    conn = get_db()
-    admin = conn.execute("SELECT * FROM users WHERE is_admin=1").fetchone()
-    if not admin:
-        api_key = generate_api_key()
-        conn.execute("INSERT INTO users(username,email,password,is_admin,api_key) VALUES(?,?,?,?,?)",
-                     ("admin", "admin@vps.com", hash_password("admin"), 1, api_key))
-        conn.commit()
-        print("Default admin created: admin / admin — CHANGE THIS PASSWORD IMMEDIATELY")
-    conn.close()
+    if ensure_default_admin():
+        print("Default admin created: admin / admin / admin@gmail.com")
+    else:
+        print("Admin account present; default credentials left untouched unless they were never changed.")
     threading.Thread(target=check_expirations, name="omega-expiration-worker", daemon=True).start()
     def _omega_schedule_loop():
         last_minute = None
