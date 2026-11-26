@@ -615,6 +615,22 @@ resp = reg_client.post("/login", data={"username": "reguser", "password": "regpa
 check("a registered user can log in in another case",
       bool(row) and resp.headers.get("Location", "").endswith("/dashboard"), resp.status_code)
 
+# 15. Installer seed step: one connection, and it must never abort an update.
+setup_text = io.open(os.path.join(root, "setup.sh"), encoding="utf-8").read()
+seed_block = setup_text.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+check("installer seed step reuses one database connection",
+      seed_block.index("conn.close()") > seed_block.index("local = conn.execute"), "")
+check("installer seed step never aborts an update",
+      "except Exception as exc" in seed_block and "sys.exit(0)" in seed_block, "")
+seed_proc = subprocess.run(
+    [sys.executable, "-"], input=seed_block, capture_output=True, text=True,
+    timeout=120, cwd=root,
+    env=dict(os.environ, OMEGA_DATA_DIR=os.path.join(tmp, "seed"),
+             OMEGA_DB=os.path.join(tmp, "seed", "omega.db")))
+check("installer seed step runs without a traceback",
+      seed_proc.returncode == 0 and "Traceback" not in seed_proc.stderr,
+      (seed_proc.stderr or "")[-160:])
+
 print()
 if failures:
     print("FAILURES:", len(failures))

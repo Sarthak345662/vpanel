@@ -171,45 +171,55 @@ PYTHON_BIN="$(command -v python3)"
 export PYTHONPATH="$INSTALL_DIR"
 ( cd "$INSTALL_DIR" && "$INSTALL_DIR/venv/bin/python" - <<'PY'
 import os
-import secrets
+import sys
 
-from app import (init_db, migrate_nodes, get_db, ensure_default_admin,
-                 DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_EMAIL)
+# This step must never abort an update: a missing admin or an unreadable
+# database prints a warning, the operator can still finish the upgrade.
+try:
+    from app import (init_db, migrate_nodes, get_db, ensure_default_admin,
+                     DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_EMAIL)
 
-init_db()
-migrate_nodes()
+    init_db()
+    migrate_nodes()
 
-# admin / admin / admin@gmail.com is the documented default. The helper only
-# creates a missing admin and never resets an existing password.
-created = ensure_default_admin()
-username = os.environ.get('OMEGA_ADMIN_USER') or DEFAULT_ADMIN_USERNAME
-password = os.environ.get('OMEGA_ADMIN_PASSWORD') or DEFAULT_ADMIN_PASSWORD
-email = (os.environ.get('OMEGA_ADMIN_EMAIL') or DEFAULT_ADMIN_EMAIL).strip().lower()
+    # admin / admin / admin@gmail.com is the documented default. The helper only
+    # creates a missing admin and never resets a password that was changed.
+    created = ensure_default_admin()
+    username = os.environ.get('OMEGA_ADMIN_USER') or DEFAULT_ADMIN_USERNAME
+    password = os.environ.get('OMEGA_ADMIN_PASSWORD') or DEFAULT_ADMIN_PASSWORD
+    email = (os.environ.get('OMEGA_ADMIN_EMAIL') or DEFAULT_ADMIN_EMAIL).strip().lower()
 
-conn = get_db()
-admin = conn.execute("SELECT username,email FROM users WHERE is_admin=1 ORDER BY id LIMIT 1").fetchone()
-conn.close()
-if admin:
-    print(f"[Vizion V4] Admin account: {admin['username']} <{admin['email']}>")
-else:
-    print('[Vizion V4] WARNING: no admin account exists; check the panel database permissions.')
-if created:
-    credentials_file = '/var/lib/omega-panel/first_admin_credentials.txt'
-    os.makedirs(os.path.dirname(credentials_file), exist_ok=True)
-    with open(credentials_file, 'w', encoding='utf-8') as fh:
-        fh.write(f"username: {username}\npassword: {password}\nemail: {email}\n")
-    os.chmod(credentials_file, 0o600)
-    print(f"[Vizion V4] First admin created: {username} / {password} / {email}")
-    print(f"[Vizion V4] Credentials file: {credentials_file}")
+    # One connection for both reads and the local-node seed: closing it between
+    # them raised "Cannot operate on a closed database" and failed the update.
+    conn = get_db()
+    try:
+        admin = conn.execute(
+            "SELECT username,email FROM users WHERE is_admin=1 ORDER BY id LIMIT 1").fetchone()
+        if admin:
+            print(f"[Vizion V4] Admin account: {admin['username']} <{admin['email']}>")
+        else:
+            print('[Vizion V4] WARNING: no admin account exists; check the panel database permissions.')
+        local = conn.execute("SELECT id FROM nodes WHERE is_local=1 LIMIT 1").fetchone()
+        if not local:
+            conn.execute(
+                "INSERT INTO nodes(name,hostname,node_url,api_key,is_local,status) VALUES(?,?,?,?,1,'online')",
+                (os.environ.get('OMEGA_HOSTNAME', 'rgnodes-vps'), '127.0.0.1', '', ''),
+            )
+            conn.commit()
+    finally:
+        conn.close()
 
-local = conn.execute("SELECT id FROM nodes WHERE is_local=1 LIMIT 1").fetchone()
-if not local:
-    conn.execute(
-        "INSERT INTO nodes(name,hostname,node_url,api_key,is_local,status) VALUES(?,?,?,?,1,'online')",
-        (os.environ.get('OMEGA_HOSTNAME', 'rgnodes-vps'), '127.0.0.1', '', ''),
-    )
-    conn.commit()
-conn.close()
+    if created:
+        credentials_file = '/var/lib/omega-panel/first_admin_credentials.txt'
+        os.makedirs(os.path.dirname(credentials_file), exist_ok=True)
+        with open(credentials_file, 'w', encoding='utf-8') as fh:
+            fh.write(f"username: {username}\npassword: {password}\nemail: {email}\n")
+        os.chmod(credentials_file, 0o600)
+        print(f"[Vizion V4] First admin created: {username} / {password} / {email}")
+        print(f"[Vizion V4] Credentials file: {credentials_file}")
+except Exception as exc:
+    print(f"[Vizion V4] WARNING: admin/seed step skipped: {exc}")
+    sys.exit(0)
 PY
 )
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" /var/lib/omega-panel
